@@ -346,7 +346,7 @@ def _on_align_point_picked(world_pos, point_num: int):
 
 _T_STEP = 0.1
 _R_STEP = 1.0
-_S_STEP = 1.0
+_S_STEP = 0.01
 
 
 class TransformPanel(lf.ui.Panel):
@@ -397,7 +397,7 @@ class TransformPanel(lf.ui.Panel):
         # Sensitivity step ladder — shared across all transform groups
         self._t_step_idx = _STEP_LEVELS.index(0.1)   if 0.1  in _STEP_LEVELS else 7
         self._r_step_idx = _STEP_LEVELS.index(1.0)   if 1.0  in _STEP_LEVELS else 9
-        self._s_step_idx = _STEP_LEVELS.index(1.0)   if 1.0  in _STEP_LEVELS else 9
+        self._s_step_idx = _STEP_LEVELS.index(1.0)   if 0.01  in _STEP_LEVELS else 4
 
         self._load_settings()
 
