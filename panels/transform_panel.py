@@ -399,7 +399,7 @@ class TransformPanel(lf.ui.Panel):
         self._r_step_idx = _STEP_LEVELS.index(1.0)   if 1.0  in _STEP_LEVELS else 9
         self._s_step_idx = _STEP_LEVELS.index(1.0)   if 0.01  in _STEP_LEVELS else 4
 
-        self._load_settings()
+        #self._load_settings()
 
     @classmethod
     def poll(cls, context) -> bool:
