@@ -171,7 +171,7 @@ def _bake(node_name: str) -> str:
     sz = np.linalg.norm(RS[:, 2])
     R  = RS / np.array([sx, sy, sz])
     try:
-        means = sd.get_means().cpu().numpy().astype(np.float64)
+        means = sd.means_raw.cpu().numpy().astype(np.float64)
         sd.means_raw[:] = lf.Tensor.from_numpy((means @ RS.T + t).astype(np.float32)).cuda()
         if not np.allclose([sx, sy, sz], 1.0, atol=1e-5):
             scales = sd.scaling_raw.cpu().numpy().astype(np.float64)
