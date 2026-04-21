@@ -30,7 +30,7 @@ The panel only activates when a splat node is selected in the scene. It is divid
 | **Node: `<name>`** | Displays the currently selected node name |
 | **Grab from viewport** | Re-reads the node's current world transform from the scene and loads it into the sliders. Use this if the sliders drift out of sync after an external move |
 | **Live** checkbox | When enabled, every slider or text field change is applied to the scene immediately. Disable to batch changes and commit them with **Apply** |
-| **Read Settings** | Reloads `settings.json` from disk — updates slider limits, step sizes, and tooltips without restarting the plugin |
+| **Read Settings** | Reloads `settings.json` from disk — updates slider limits, step sizes, and scene node naming with needing a reload of the plugin |
 | **Open Log** | Opens `session_log.json` in Notepad++ (falls back to Notepad) |
 | **Open Settings** | Opens `settings.json` in Notepad++ (falls back to Notepad) |
 
