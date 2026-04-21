@@ -648,6 +648,39 @@ class TransformPanel(lf.ui.Panel):
             self._status = f"Could not open settings: {e}"
         self._dirty("status_text", "status_class")
 
+    def _expand_t_limits(self, tx: float, ty: float, tz: float) -> list[str]:
+        """Expand _t_min/_t_max to fit the given translation values if needed.
+        Returns a list of human-readable strings describing any changes made.
+        """
+        changes = []
+        margin  = 1.1   # expand to 110% of required value so there's slider room
+
+        required_min = min(tx, ty, tz) * margin if min(tx, ty, tz) < 0 else min(tx, ty, tz)
+        required_max = max(tx, ty, tz) * margin if max(tx, ty, tz) > 0 else max(tx, ty, tz)
+
+        if required_min < self._t_min:
+            new_min = float(round(required_min * margin, 2))
+            # Snap to a round number
+            import math
+            mag = 10 ** math.floor(math.log10(abs(new_min))) if new_min != 0 else 1
+            new_min = math.floor(new_min / mag) * mag
+            changes.append(f"T-min {self._t_min} → {new_min}")
+            self._t_min = new_min
+
+        if required_max > self._t_max:
+            new_max = float(round(required_max * margin, 2))
+            import math
+            mag = 10 ** math.floor(math.log10(abs(new_max))) if new_max != 0 else 1
+            new_max = math.ceil(new_max / mag) * mag
+            changes.append(f"T-max {self._t_max} → {new_max}")
+            self._t_max = new_max
+
+        if changes:
+            self._save_settings()
+            self._dirty("t_min", "t_max", "tip_tx", "tip_ty", "tip_tz")
+
+        return changes
+
     def _on_recenter_xyz(self, handle, event, args):
         """Prefill translation fields with values that would move the bounding-box
         centroid to the world origin (0, 0, 0). Does NOT apply the transform."""
@@ -664,11 +697,18 @@ class TransformPanel(lf.ui.Panel):
             # Prefill — keep rotation and scale unchanged
             # _mat_from_trs negates tz again in Y_UP mode, so pre-flip to compensate
             tz_sign = 1.0 if Y_UP else -1.0
-            self._tx = float(np.clip(-centroid[0], self._t_min, self._t_max))
-            self._ty = - float(np.clip(-centroid[1], self._t_min, self._t_max))
-            self._tz = float(np.clip(tz_sign * centroid[2], self._t_min, self._t_max))
+            raw_tx =  -centroid[0]
+            raw_ty =  -centroid[1]
+            raw_tz =   tz_sign * centroid[2]
+            # Auto-expand limits if the required values would be clipped
+            limit_changes = self._expand_t_limits(raw_tx, raw_ty, raw_tz)
+            self._tx = float(np.clip(raw_tx, self._t_min, self._t_max))
+            self._ty = float(np.clip(raw_ty, self._t_min, self._t_max))
+            self._tz = float(np.clip(raw_tz, self._t_min, self._t_max))
+            suffix = (f"  (limits expanded: {', '.join(limit_changes)})"
+                      if limit_changes else "")
             self._status = (f"Prefilled: X={self._tx:.4f}  Y={self._ty:.4f}  "
-                            f"Z={self._tz:.4f}  (centroid → 0,0,0 — press Apply to confirm)")
+                            f"Z={self._tz:.4f}  (centroid → 0,0,0 — press Apply to confirm){suffix}")
             if self._live:
                 self._apply_to_scene()
             self._dirty("tx_str", "ty_str", "tz_str", "status_text", "status_class")
@@ -694,11 +734,18 @@ class TransformPanel(lf.ui.Panel):
             floor_y  = mx[1]  # top edge → Y=0
             # _mat_from_trs negates tz again in Y_UP mode, so pre-flip to compensate
             tz_sign = 1.0 if Y_UP else -1.0
-            self._tx = float(np.clip(-centre_x, self._t_min, self._t_max))
-            self._ty = - float(np.clip(-floor_y,  self._t_min, self._t_max))
-            self._tz = float(np.clip(tz_sign * centre_z, self._t_min, self._t_max))
+            raw_tx =  -centre_x
+            raw_ty =  -floor_y
+            raw_tz =   tz_sign * centre_z
+            # Auto-expand limits if the required values would be clipped
+            limit_changes = self._expand_t_limits(raw_tx, raw_ty, raw_tz)
+            self._tx = float(np.clip(raw_tx, self._t_min, self._t_max))
+            self._ty = float(np.clip(raw_ty, self._t_min, self._t_max))
+            self._tz = float(np.clip(raw_tz, self._t_min, self._t_max))
+            suffix = (f"  (limits expanded: {', '.join(limit_changes)})"
+                      if limit_changes else "")
             self._status = (f"Prefilled: X={self._tx:.4f}  Y={self._ty:.4f}  "
-                            f"Z={self._tz:.4f}  (floor at Y=0, centred X/Z — press Apply to confirm)")
+                            f"Z={self._tz:.4f}  (floor at Y=0, centred X/Z — press Apply to confirm){suffix}")
             if self._live:
                 self._apply_to_scene()
             self._dirty("tx_str", "ty_str", "tz_str", "status_text", "status_class")
