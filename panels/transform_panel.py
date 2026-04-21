@@ -15,8 +15,22 @@ import lichtfeld as lf
 # ── Align: point-picker operator ─────────────────────────────────────────────
 from ..operators.align_picker import (
     set_capture_callback, clear_capture_callback, was_capture_cancelled,
-    poll_hover, capture_hovered_point, get_hovered_pos,
 )
+
+def _invoke_pick_op():
+    """Invoke the pick operator using the correct fully-qualified ID.
+    Derived from __name__ so it works regardless of plugin folder name.
+    e.g. lfs_plugins.EnhancedEdit.operators.align_picker.ALIGN_OT_pick_point
+    """
+    parts  = __name__.split(".")           # ['lfs_plugins', '<pkg>', 'panels', ...]
+    prefix = ".".join(parts[:2])           # 'lfs_plugins.<pkg>'
+    op_id  = f"{prefix}.operators.align_picker.ALIGN_OT_pick_point"
+    lf.log.info(f"EDIT Align: invoking {op_id}")
+    try:
+        lf.ui.ops.invoke(op_id)
+    except Exception as e:
+        lf.log.error(f"EDIT Align: invoke failed: {e}")
+
 
 # ── Version detection ─────────────────────────────────────────────────────────
 # v0.5.0.x uses -Y-up;  v0.5.1+ uses +Y-up.
@@ -33,6 +47,17 @@ Y_UP = _LFS_VER >= (0, 5, 1)   # True → +Y-up  /  False → -Y-up
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# Sensitivity ladder used by the [-]/[+] step controls.
+_STEP_LEVELS = [
+    0.001, 0.002, 0.005,
+    0.01,  0.02,  0.05,
+    0.1,   0.2,   0.5,
+    1,     2,     5,
+    10,    20,    50,
+    100,   200,   500,  1000,
+]
+
 
 def _mat_from_trs(tx, ty, tz, rx, ry, rz, sx, sy, sz):
     # In +Y-up mode, Y/Z translation and X/Z rotation are stored with the
@@ -161,7 +186,7 @@ def _bake(node_name: str) -> str:
     sz = np.linalg.norm(RS[:, 2])
     R  = RS / np.array([sx, sy, sz])
     try:
-        means = sd.get_means().cpu().numpy().astype(np.float64)
+        means = sd.means_raw.cpu().numpy().astype(np.float64)
         sd.means_raw[:] = lf.Tensor.from_numpy((means @ RS.T + t).astype(np.float32)).cuda()
         if not np.allclose([sx, sy, sz], 1.0, atol=1e-5):
             scales = sd.scaling_raw.cpu().numpy().astype(np.float64)
@@ -273,7 +298,7 @@ def _calc_alignment_rotation(p1, p2, axis: str) -> tuple[float, float, float]:
         return (0.0, -angle, 0.0)
     else:  # Z
         angle = math.degrees(math.atan2(v[1], v[0]))
-        return (0.0, 0.0, -angle)
+        return (0.0, 0.0, -(90.0 - angle))
 
 
 def _align_draw_handler(ctx):
@@ -283,13 +308,13 @@ def _align_draw_handler(ctx):
                          f"ALIGN — PICK POINT {_align_picking_which}:  click on model  (ESC to cancel)",
                          color)
     if _align_pt1_world is not None:
-        ctx.draw_point_3d(_align_pt1_world, (0.0, 1.0, 0.5, 1.0), 14.0)
+        ctx.draw_point_3d(_align_pt1_world, (0.0, 1.0, 0.5, 1.0), 5.0)
         s1 = ctx.world_to_screen(_align_pt1_world)
         if s1:
             ctx.draw_circle_2d(s1, 10.0, (0.0, 1.0, 0.5, 1.0), 2.0)
             ctx.draw_text_2d((s1[0] + 14, s1[1] - 6), "Pt 1", (0.0, 1.0, 0.5, 1.0))
     if _align_pt2_world is not None:
-        ctx.draw_point_3d(_align_pt2_world, (1.0, 0.6, 0.1, 1.0), 14.0)
+        ctx.draw_point_3d(_align_pt2_world, (1.0, 0.6, 0.1, 1.0), 5.0)
         s2 = ctx.world_to_screen(_align_pt2_world)
         if s2:
             ctx.draw_circle_2d(s2, 10.0, (1.0, 0.6, 0.1, 1.0), 2.0)
@@ -336,14 +361,14 @@ def _on_align_point_picked(world_pos, point_num: int):
 
 _T_STEP = 0.1
 _R_STEP = 1.0
-_S_STEP = 0.01
+_S_STEP = 1.0
 
 
 class TransformPanel(lf.ui.Panel):
     id                 = "edit.transform_panel"
     label              = "Edit"
     space              = lf.ui.PanelSpace.MAIN_PANEL_TAB
-    order              = 290
+    order              = 3
     template           = str(Path(__file__).resolve().with_name("transform_panel.rml"))
     height_mode        = lf.ui.PanelHeightMode.CONTENT
     update_interval_ms = 100
@@ -373,6 +398,7 @@ class TransformPanel(lf.ui.Panel):
         self._status         = ""
         self._last_node_name = None   # dirty-detection
         self._last_logged    = None   # dedup: last transform written to session log
+        self._scene_synced   = False  # guard: block _apply_to_scene until first sync
 
         # Slider limits — defaults; overridden by settings.json if present
         self._t_min  = -50.0
@@ -383,7 +409,11 @@ class TransformPanel(lf.ui.Panel):
         self._s_max  =  5.0
         self._t_step =  0.1
         self._r_step =  1.0
-        self._s_step =  0.01
+        self._s_step =  1.0
+        # Sensitivity step ladder — shared across all transform groups
+        self._t_step_idx = _STEP_LEVELS.index(0.1)   if 0.1  in _STEP_LEVELS else 7
+        self._r_step_idx = _STEP_LEVELS.index(1.0)   if 1.0  in _STEP_LEVELS else 9
+        self._s_step_idx = _STEP_LEVELS.index(1.0)   if 1.0  in _STEP_LEVELS else 9
 
         self._load_settings()
 
@@ -411,12 +441,15 @@ class TransformPanel(lf.ui.Panel):
         model.bind_func("t_min",  lambda: str(self._t_min))
         model.bind_func("t_max",  lambda: str(self._t_max))
         model.bind_func("t_step", lambda: str(self._t_step))
+        model.bind_func("t_step_label", lambda: str(_STEP_LEVELS[self._t_step_idx]))
         model.bind_func("r_min",  lambda: str(self._r_min))
         model.bind_func("r_max",  lambda: str(self._r_max))
         model.bind_func("r_step", lambda: str(self._r_step))
+        model.bind_func("r_step_label", lambda: str(_STEP_LEVELS[self._r_step_idx]))
         model.bind_func("s_min",  lambda: str(self._s_min))
         model.bind_func("s_max",  lambda: str(self._s_max))
         model.bind_func("s_step", lambda: str(self._s_step))
+        model.bind_func("s_step_label", lambda: str(_STEP_LEVELS[self._s_step_idx]))
 
         # Tooltip strings — built from loaded limits so they stay in sync with settings.json
         model.bind_func("tip_live",    lambda: "When enabled, every change is applied immediately. Disable to batch changes and apply with the Apply button.")
@@ -506,12 +539,8 @@ class TransformPanel(lf.ui.Panel):
         model.bind_func("align_pick2_label",lambda: (
             "◉ Picking Pt 2…" if self._align_picking == 2 else
             ("Repick Pt 2" if self._align_pt2 else "Pick Point 2")))
-        model.bind_func("align_hover_label", lambda: (
-            "✔ Capture Point" if get_hovered_pos() is not None
-            else "— hover over model —"))
-        model.bind_func("align_hover_ready",    lambda: get_hovered_pos() is not None)
         model.bind_func("align_picking_active", lambda: self._align_picking > 0)
-        model.bind_event("align_capture",    self._on_align_capture)
+
         model.bind_func("align_can_calc",   lambda: (
             self._align_pt1 is not None and self._align_pt2 is not None))
 
@@ -532,6 +561,7 @@ class TransformPanel(lf.ui.Panel):
         model.bind_event("do_create_folder",   self._on_create_folder)
         model.bind_event("do_move",            self._on_move)
         model.bind_event("num_step",           self._on_num_step)
+        model.bind_event("step_sensitivity",   self._on_step_sensitivity)
         model.bind_event("do_reload_settings",  self._on_reload_settings)
         model.bind_event("do_open_log",         self._on_open_log)
         model.bind_event("do_open_settings",    self._on_open_settings)
@@ -540,18 +570,21 @@ class TransformPanel(lf.ui.Panel):
 
         self._handle = model.get_handle()
         self._sync_from_scene()
+        # Fire reset x3 to ensure scale sliders settle at 1,1,1
+        self._uniform_scale = False  
+        self._do_scale_reset()       
+        self._do_scale_reset()
+        self._do_scale_reset()     
+        self._uniform_scale = True
+        self._uniform_scale = False  
+        self._do_scale_reset()       
+        self._do_scale_reset()
+        self._do_scale_reset()     
+        self._uniform_scale = True
+
 
     def on_update(self, doc):
         changed = self._process_align_picks()
-        # Poll hover every tick while picking is active
-        if self._align_picking > 0:
-            had_pos = get_hovered_pos() is not None
-            poll_hover()
-            has_pos = get_hovered_pos() is not None
-            if has_pos != had_pos:
-                self._dirty("align_pick1_label", "align_pick2_label",
-                            "align_hover_label")
-                changed = True
         if _align_overlay_active():
             try:
                 lf.ui.request_redraw()
@@ -568,6 +601,7 @@ class TransformPanel(lf.ui.Panel):
     def on_unmount(self, doc):
         doc.remove_data_model("transform_panel")
         self._handle = None
+        self._scene_synced = False
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -628,9 +662,11 @@ class TransformPanel(lf.ui.Panel):
             mx = np.array(mx, dtype=np.float64)
             centroid = (mn + mx) / 2.0
             # Prefill — keep rotation and scale unchanged
+            # _mat_from_trs negates tz again in Y_UP mode, so pre-flip to compensate
+            tz_sign = 1.0 if Y_UP else -1.0
             self._tx = float(np.clip(-centroid[0], self._t_min, self._t_max))
-            self._ty = float(np.clip(-centroid[1], self._t_min, self._t_max))
-            self._tz = float(np.clip(-centroid[2], self._t_min, self._t_max))
+            self._ty = - float(np.clip(-centroid[1], self._t_min, self._t_max))
+            self._tz = float(np.clip(tz_sign * centroid[2], self._t_min, self._t_max))
             self._status = (f"Prefilled: X={self._tx:.4f}  Y={self._ty:.4f}  "
                             f"Z={self._tz:.4f}  (centroid → 0,0,0 — press Apply to confirm)")
             if self._live:
@@ -656,9 +692,11 @@ class TransformPanel(lf.ui.Panel):
             centre_x = (mn[0] + mx[0]) / 2.0
             centre_z = (mn[2] + mx[2]) / 2.0
             floor_y  = mx[1]  # top edge → Y=0
+            # _mat_from_trs negates tz again in Y_UP mode, so pre-flip to compensate
+            tz_sign = 1.0 if Y_UP else -1.0
             self._tx = float(np.clip(-centre_x, self._t_min, self._t_max))
-            self._ty = float(np.clip(-floor_y,  self._t_min, self._t_max))
-            self._tz = float(np.clip(-centre_z, self._t_min, self._t_max))
+            self._ty = - float(np.clip(-floor_y,  self._t_min, self._t_max))
+            self._tz = float(np.clip(tz_sign * centre_z, self._t_min, self._t_max))
             self._status = (f"Prefilled: X={self._tx:.4f}  Y={self._ty:.4f}  "
                             f"Z={self._tz:.4f}  (floor at Y=0, centred X/Z — press Apply to confirm)")
             if self._live:
@@ -667,6 +705,31 @@ class TransformPanel(lf.ui.Panel):
         except Exception as e:
             self._status = f"ReCent XZ error: {e}"
             self._dirty("status_text", "status_class")
+
+    def _on_step_sensitivity(self, handle, event, args):
+        """Walk the step ladder for a transform group (t / r / s)."""
+        if not args or len(args) < 2:
+            return
+        group     = str(args[0])   # "t", "r", or "s"
+        direction = int(args[1])   # -1 or +1
+        idx_attr  = f"_{group}_step_idx"
+        step_attr = f"_{group}_step"
+        if not hasattr(self, idx_attr):
+            return
+        idx = getattr(self, idx_attr)
+        idx = max(0, min(len(_STEP_LEVELS) - 1, idx + direction))
+        setattr(self, idx_attr, idx)
+        setattr(self, step_attr, _STEP_LEVELS[idx])
+        # Also persist to settings
+        self._save_settings()
+        self._dirty(f"{group}_step", f"{group}_step_label")
+
+    def _do_scale_reset(self):
+        """Force scale to 1,1,1 and update the scene if live."""
+        self._sx = self._sy = self._sz = 1.0
+        if self._live and self._node_name and self._scene_synced:
+            self._apply_to_scene()
+        self._dirty("sx_str", "sy_str", "sz_str")
 
     def _on_grab(self, handle, event, args):
         self._sync_from_scene()
@@ -680,11 +743,19 @@ class TransformPanel(lf.ui.Panel):
         self._dirty("status_text", "status_class")
 
     def _on_reset(self, handle, event, args):
+        self._uniform_scale = False 
         self._tx = self._ty = self._tz = 0.0
         self._rx = self._ry = self._rz = 0.0
+        # x3 to try & solve sticky issue
         self._sx = self._sy = self._sz = 1.0
         self._apply_to_scene()
-        self._log_transform("reset")
+        self._sx = self._sy = self._sz = 1.0
+        self._apply_to_scene()
+        self._sx = self._sy = self._sz = 1.0
+        self._apply_to_scene()
+        self._uniform_scale = True
+        
+        self._log_transform("Input.Reset")
         self._status = "Reset to identity."
         self._save_settings()
         self._dirty("tx_str", "ty_str", "tz_str",
@@ -863,7 +934,10 @@ class TransformPanel(lf.ui.Panel):
             self._node_name = name
             (self._tx, self._ty, self._tz,
              self._rx, self._ry, self._rz,
-             self._sx, self._sy, self._sz) = _decompose_mat(node.world_transform)
+             _, _, _) = _decompose_mat(node.world_transform)
+            # Scale always starts at 1,1,1 on load regardless of scene state
+            self._sx = self._sy = self._sz = 1.0
+            self._scene_synced = True
             lf.log.info(f"EDIT synced: t=({self._tx:.3f},{self._ty:.3f},{self._tz:.3f}) "
                         f"r=({self._rx:.1f},{self._ry:.1f},{self._rz:.1f}) "
                         f"s=({self._sx:.3f},{self._sy:.3f},{self._sz:.3f})")
@@ -871,7 +945,7 @@ class TransformPanel(lf.ui.Panel):
             self._status = f"Sync error: {e}"
 
     def _apply_to_scene(self):
-        if not self._node_name:
+        if not self._node_name or not self._scene_synced:
             return
         try:
             mat = _mat_from_trs(self._tx, self._ty, self._tz,
@@ -1051,9 +1125,9 @@ class TransformPanel(lf.ui.Panel):
             self._rx            = float(t.get("rx",            self._rx))
             self._ry            = float(t.get("ry",            self._ry))
             self._rz            = float(t.get("rz",            self._rz))
-            self._sx            = float(t.get("sx",            self._sx))
-            self._sy            = float(t.get("sy",            self._sy))
-            self._sz            = float(t.get("sz",            self._sz))
+            self._sx = float(t.get("sx", self._sx))
+            self._sy = float(t.get("sy", self._sy))
+            self._sz = float(t.get("sz", self._sz))
             # Booleans: use explicit `is True` comparison to correctly read
             # JSON false (Python False) rather than truthy/falsy coercion.
             us = t.get("uniform_scale", self._uniform_scale)
@@ -1074,7 +1148,13 @@ class TransformPanel(lf.ui.Panel):
             self._s_max  = float(lim.get("scale_max",        self._s_max))
             self._t_step = float(lim.get("translation_step", self._t_step))
             self._r_step = float(lim.get("rotation_step",    self._r_step))
-            self._s_step = float(lim.get("scale_step",       self._s_step))
+            saved_s_step = float(lim.get("scale_step", self._s_step))
+            # If settings.json has a stale sub-1.0 scale step, reset to 1.0
+            self._s_step = saved_s_step if saved_s_step >= 1.0 else 1.0
+            # Restore step indices to match loaded step values
+            self._t_step_idx = min(range(len(_STEP_LEVELS)), key=lambda i: abs(_STEP_LEVELS[i] - self._t_step))
+            self._r_step_idx = min(range(len(_STEP_LEVELS)), key=lambda i: abs(_STEP_LEVELS[i] - self._r_step))
+            self._s_step_idx = min(range(len(_STEP_LEVELS)), key=lambda i: abs(_STEP_LEVELS[i] - self._s_step))
         except FileNotFoundError:
             pass  # first run — file will be created on first save
         except Exception as e:
@@ -1133,16 +1213,16 @@ class TransformPanel(lf.ui.Panel):
                     "rx_str", "ry_str", "rz_str",
                     "sx_str", "sy_str", "sz_str",
                     "live", "uniform_scale",
-                    "t_min", "t_max", "t_step",
-                    "r_min", "r_max", "r_step",
-                    "s_min", "s_max", "s_step",
+                    "t_min", "t_max", "t_step", "t_step_label",
+                    "r_min", "r_max", "r_step", "r_step_label",
+                    "s_min", "s_max", "s_step", "s_step_label",
                     "tip_live", "tip_uniform",
                     "tip_tx", "tip_ty", "tip_tz",
                     "tip_rx", "tip_ry", "tip_rz",
                     "tip_sx", "tip_sy", "tip_sz",
                     "merge_name", "folder_name", "move_target",
                     "align_expanded", "align_section_label",
-                    "align_hover_label", "align_hover_ready", "align_picking_active",
+                    "align_picking_active",
                     "align_axis_idx", "align_btn_x", "align_btn_y", "align_btn_z",
                     "align_pt1_label", "align_pt2_label",
                     "align_result_rx", "align_result_ry", "align_result_rz",
@@ -1182,15 +1262,6 @@ class TransformPanel(lf.ui.Panel):
         self._align_expanded = not self._align_expanded
         self._dirty("align_expanded", "align_section_label")
 
-    def _on_align_capture(self, handle, event, args):
-        if self._align_picking == 0:
-            return
-        if not capture_hovered_point():
-            self._status = "Nothing hovered — move cursor over the model first."
-            self._dirty("status_text", "status_class")
-            return
-        # capture_hovered_point fires _on_align_point_picked via callback
-
     def _on_align_axis_x(self, handle, event, args):
         self._align_axis_idx = 0
         self._align_has_calc = False
@@ -1222,8 +1293,9 @@ class TransformPanel(lf.ui.Panel):
             self._align_picking = 1
             _align_picking_which = 1
             self._align_has_calc = False
-            self._status = "Hover over model, then click Capture Point 1."
+            self._status = "Click on the model to pick Point 1…  (ESC to cancel)"
             set_capture_callback(_on_align_point_picked, 1)
+            _invoke_pick_op()
         self._dirty("align_pick1_label", "align_pick2_label",
                     "align_has_calc", "status_text", "status_class")
         lf.ui.request_redraw()
@@ -1246,6 +1318,7 @@ class TransformPanel(lf.ui.Panel):
             self._align_has_calc = False
             self._status = "Click on the model to pick Point 2…  (ESC to cancel)"
             set_capture_callback(_on_align_point_picked, 2)
+            _invoke_pick_op()
         self._dirty("align_pick1_label", "align_pick2_label",
                     "align_has_calc", "status_text", "status_class")
         lf.ui.request_redraw()
@@ -1264,8 +1337,8 @@ class TransformPanel(lf.ui.Panel):
             self._align_has_calc = True
             # Write the delta directly into the rotation fields
             self._rx = max(self._r_min, min(self._r_max, self._rx + rx))
-            self._ry = max(self._r_min, min(self._r_max, self._ry + ry))
-            self._rz = max(self._r_min, min(self._r_max, self._rz + rz))
+            self._ry = - max(self._r_min, min(self._r_max, self._ry + ry))
+            self._rz = - max(self._r_min, min(self._r_max, self._rz + rz))
             self._status = (
                 f"Angle calculated — Rx {rx:+.3f}°  Ry {ry:+.3f}°  Rz {rz:+.3f}°  "
                 f"— values added to Rotation fields. Press Apply (or Bake) to commit."

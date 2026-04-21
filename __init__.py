@@ -3,8 +3,9 @@
 
 import lichtfeld as lf
 from .panels.transform_panel import TransformPanel
+from .operators.align_picker import ALIGN_OT_pick_point
 
-_classes = [TransformPanel]
+_classes = [TransformPanel, ALIGN_OT_pick_point]
 
 
 def on_load():
