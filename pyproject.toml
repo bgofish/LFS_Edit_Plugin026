@@ -1,6 +1,6 @@
 [project]
 name = "EnhancedEdit"
-version = "0.2.6"
+version = "0.2.7"
 description = "Enhanced Editor"
 authors = [{ name = "Brian Davis (bb6)" }]
 dependencies = []
