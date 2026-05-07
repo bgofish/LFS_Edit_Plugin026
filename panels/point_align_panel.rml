@@ -3,12 +3,15 @@
 <div id="content-wrap"><div id="content">
 
   <!-- Instructions -->
-  <span class="section-label" style="color: #4A90D9;">3-Point Alignment</span>
+  <span class="section-label" style="color: #4A90D9;">3-Point Alignment</span><br/>
   <span class="text-muted">Step 1: Pick 3 points on the REFERENCE 3DGS.</span><br/>
   <span class="text-muted">Step 2: Pick 3 points on the TARGET 3DGS.</span><br/>
-  <span class="text-muted">Step 3: Calculate &amp; apply to the Edit panel.</span>
-
-  <div class="separator"></div>
+  <span class="text-muted">Step 3: Press [Calculate Transform]</span><br/>
+  <span class="text-muted">Step 4: Press [Apply to the Edit panel]</span><br/>  
+  <span class="text-muted">Step 5: Switch to [Edit] and with Target 3dGS selected - Press [Read Settings].</span><br/> 
+  <span class="text-muted">Step 6: If you are happy with the transform then Press [Bake Transform] to make changes permanent.</span><br/> 
+  <span class="text-muted">NOte:All transform settings will revert to 0 after Bake Transform</span><br/>
+   <div class="separator"></div>
 
   <!-- ── ADJUST POINTS ── -->
   <span class="section-label" style="color: #ffcc44;">─── Adjust Points ───</span>
@@ -17,13 +20,13 @@
   <div class="setting-row">
     <span class="prop-label">Step:</span>
     <button class="{{step__001_active ? 'btn btn--primary' : 'btn'}}"
-            data-event-click="step__001" style="width:44px;">.001</button>
+            data-event-click="step__001" style="width:44px;">[0.001]</button>
     <button class="{{step__01_active  ? 'btn btn--primary' : 'btn'}}"
-            data-event-click="step__01"  style="width:44px;">.01</button>
+            data-event-click="step__01"  style="width:44px;">  [0.01]</button>
     <button class="{{step__1_active   ? 'btn btn--primary' : 'btn'}}"
-            data-event-click="step__1"   style="width:44px;">.1</button>
+            data-event-click="step__1"   style="width:44px;"> [0.1]</button>
     <button class="{{step_1_0_active  ? 'btn btn--primary' : 'btn'}}"
-            data-event-click="step_1_0"  style="width:44px;">1.0</button>
+            data-event-click="step_1_0"  style="width:44px;">[1.0]</button>
   </div>
 
   <!-- ── Reference point nudge rows ── -->
@@ -32,13 +35,13 @@
   <!-- Ref Pt 1 -->
   <div class="btn-row" data-if="ref_pt1_has_pos">
     <span style="color:#20c8ff; font-weight:bold; min-width:28px;">R1:</span>
-    <span style="color:#ff5555;">X</span>
+    <span style="color:#ff5555;">  X</span>
     <button class="btn" data-event-click="ref_pt1_x_minus" style="width:28px;">-</button>
     <button class="btn" data-event-click="ref_pt1_x_plus"  style="width:28px;">+</button>
-    <span style="color:#55ff55;">Y</span>
+    <span style="color:#55ff55;">  Y</span>
     <button class="btn" data-event-click="ref_pt1_y_minus" style="width:28px;">-</button>
     <button class="btn" data-event-click="ref_pt1_y_plus"  style="width:28px;">+</button>
-    <span style="color:#5588ff;">Z</span>
+    <span style="color:#5588ff;">  Z</span>
     <button class="btn" data-event-click="ref_pt1_z_minus" style="width:28px;">-</button>
     <button class="btn" data-event-click="ref_pt1_z_plus"  style="width:28px;">+</button>
   </div>
