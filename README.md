@@ -2,7 +2,7 @@
 
 **Version:** 0.2.6  
 **Author:** Brian Davis (bb6)  
-**Requires:** Lichtfeld Studio ≥ 0.5.1
+**Requires:** Lichtfeld Studio ≥ 0.5.1  - ALIGNMENT PICK CRASHES Some Nightly Buils - Tested with 0.5.2 Stable 
 
 A comprehensive transform editing panel for Gaussian Splat nodes in Lichtfeld Studio. Provides precision translation, rotation, and scale controls with live preview, alignment tools, baking, merging, and splat management — all from a single panel.
 
