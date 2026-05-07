@@ -10,7 +10,7 @@
   <span class="text-muted">Step 4: Press [Apply to the Edit panel]</span><br/>  
   <span class="text-muted">Step 5: Switch to [Edit] and with Target 3dGS selected - Press [Read Settings].</span><br/> 
   <span class="text-muted">Step 6: If you are happy with the transform then Press [Bake Transform] to make changes permanent.</span><br/> 
-  <span class="text-muted">NOte:All transform settings will revert to 0 after Bake Transform</span><br/>
+  <span class="text-muted">Note:All transform settings will revert to 0 after Bake Transform</span><br/>
    <div class="separator"></div>
 
   <!-- ── ADJUST POINTS ── -->
