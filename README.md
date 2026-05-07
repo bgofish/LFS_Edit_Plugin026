@@ -262,6 +262,10 @@ Each entry records:
 
 ## Changelog
 
+### 0.2.7
+- Added Additional 3Point Align TAB - Data is passed back to the [Edit Tab] for final processing
+
+
 ### 0.2.6
 - Added collapsible ▶ / ▼ Align section
 - Added per-section sensitivity step ladder for Translation, Rotation, and Scale (19 levels: 0.001 → 1000)
