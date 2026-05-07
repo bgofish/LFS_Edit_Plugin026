@@ -14,7 +14,7 @@ import lichtfeld as lf
 
 # ── Align: point-picker operator ─────────────────────────────────────────────
 from ..operators.align_picker import (
-    set_capture_callback, clear_capture_callback, was_capture_cancelled,
+    set_pick_callback, clear_pick_callback, was_pick_cancelled,
 )
 
 def _invoke_pick_op():
@@ -28,6 +28,7 @@ def _invoke_pick_op():
     lf.log.info(f"EDIT Align: invoking {op_id}")
     try:
         lf.ui.ops.invoke(op_id)
+        lf.ui.request_redraw()
     except Exception as e:
         lf.log.error(f"EDIT Align: invoke failed: {e}")
 
@@ -1298,7 +1299,7 @@ class TransformPanel(lf.ui.Panel):
         _align_pt1_world      = None
         _align_pt2_world      = None
         _align_picking_which  = 0
-        clear_capture_callback()
+        clear_pick_callback()
         self._dirty("align_pt1_label", "align_pt2_label",
                     "align_pick1_label", "align_pick2_label", "align_has_calc")
         lf.ui.request_redraw()
@@ -1330,7 +1331,7 @@ class TransformPanel(lf.ui.Panel):
         if self._align_picking == 1:
             self._align_picking = 0
             _align_picking_which = 0
-            clear_capture_callback()
+            clear_pick_callback()
             try:
                 lf.ui.ops.cancel_modal()
             except Exception:
@@ -1341,7 +1342,7 @@ class TransformPanel(lf.ui.Panel):
             _align_picking_which = 1
             self._align_has_calc = False
             self._status = "Click on the model to pick Point 1…  (ESC to cancel)"
-            set_capture_callback(_on_align_point_picked, 1)
+            set_pick_callback(_on_align_point_picked, 1)
             _invoke_pick_op()
         self._dirty("align_pick1_label", "align_pick2_label",
                     "align_has_calc", "status_text", "status_class")
@@ -1353,7 +1354,7 @@ class TransformPanel(lf.ui.Panel):
         if self._align_picking == 2:
             self._align_picking = 0
             _align_picking_which = 0
-            clear_capture_callback()
+            clear_pick_callback()
             try:
                 lf.ui.ops.cancel_modal()
             except Exception:
@@ -1364,7 +1365,7 @@ class TransformPanel(lf.ui.Panel):
             _align_picking_which = 2
             self._align_has_calc = False
             self._status = "Click on the model to pick Point 2…  (ESC to cancel)"
-            set_capture_callback(_on_align_point_picked, 2)
+            set_pick_callback(_on_align_point_picked, 2)
             _invoke_pick_op()
         self._dirty("align_pick1_label", "align_pick2_label",
                     "align_has_calc", "status_text", "status_class")
@@ -1422,7 +1423,7 @@ class TransformPanel(lf.ui.Panel):
             lf.ui.request_redraw()
             return True
 
-        if was_capture_cancelled() and self._align_picking > 0:
+        if was_pick_cancelled() and self._align_picking > 0:
             self._align_picking = 0
             _align_picking_which = 0
             self._status = "Pick cancelled."
