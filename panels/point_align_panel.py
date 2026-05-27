@@ -8,7 +8,7 @@ Workflow
    The modal stays active between picks so you don't need to click the button
    for each point.  Press ESC to stop picking.  Then [Save Ref Points].
 
-2. Switch to the TARGET 3DGS. Repeat for the Target section. [Save Target Points].
+2. Switch to the ALIGN 3DGS. Repeat for the Align section. [Save Align Points].
 
 3. Click [Calculate Transform]. Results appear below.
 
@@ -31,6 +31,34 @@ from pathlib import Path
 import numpy as np
 import lichtfeld as lf
 
+# ── Coordinate convention ─────────────────────────────────────────────────────
+# v0.5.0.x uses -Y-up; v0.5.1+ uses +Y-up.
+#
+# Picked points are world-space coordinates — they are already in the scene's
+# native frame and must be fed to the SVD solver as-is.
+#
+# The Edit panel stores translation with ty and tz sign-flipped relative to
+# world space in +Y-up mode (mirrors transform_panel._decompose_mat).
+# So we solve in world space and only flip the OUTPUT translation before
+# writing to settings.json / displaying in the panel.
+def _parse_version(v: str) -> tuple:
+    import re
+    parts = v.lstrip("v").split(".")[:3]
+    return tuple(int(re.match(r"\d+", x).group()) for x in parts)
+
+_LFS_VER = _parse_version(lf.__version__)
+Y_UP = _LFS_VER >= (0, 5, 1)   # True -> +Y-up  /  False -> -Y-up
+
+
+def _world_t_to_panel(t: np.ndarray):
+    """The SVD solver produces translation in world space, which matches
+    the Edit panel's user-space values directly.  No sign conversion needed.
+    (The ty/tz negation in transform_panel is a scene-matrix storage detail,
+    not a user-space convention — it does not apply here.)
+    """
+    return float(t[0]), float(t[1]), float(t[2])
+
+
 from ..operators.point_align_picker import (
     set_pick_callback,
     clear_pick_callback,
@@ -40,7 +68,7 @@ from ..operators.point_align_picker import (
 # ── Constants ─────────────────────────────────────────────────────────────────
 _NUM_POINTS = 3
 
-# Overlay colours: ref pts (cyan shades), target pts (amber/magenta shades)
+# Overlay colours: ref pts (cyan shades), align pts (amber/magenta shades)
 _REF_COLORS = [
     (0.2, 0.9, 1.0, 1.0),   # Ref Pt 1 – cyan
     (0.1, 0.7, 1.0, 1.0),   # Ref Pt 2 – blue-cyan
@@ -55,12 +83,12 @@ _TBA_COLORS = [
 _STEP_OPTIONS = [(0.001, ".001"), (0.01, ".01"), (0.1, ".1"), (1.0, "1.0")]
 
 # ── Module-level overlay state ─────────────────────────────────────────────────
-# Slots 0-2 = reference pts, slots 3-5 = target pts.
+# Slots 0-2 = reference pts, slots 3-5 = align pts.
 # Both sets are kept alive simultaneously so neither disappears when picking
 # the other mode.
 _overlay_registered = False
 _ref_overlay   = [None, None, None]   # world-space ref pts shown in overlay
-_tba_overlay   = [None, None, None]   # world-space target pts shown in overlay
+_tba_overlay   = [None, None, None]   # world-space align pts shown in overlay
 _picking_which = 0                    # 0=idle, 1-3=waiting for that slot
 _picking_mode  = ""                   # "ref" or "tba"
 _pending_pick  = None                 # set by modal callback, drained in on_update
@@ -76,8 +104,8 @@ def _reference_json() -> Path:
     return _plugin_dir() / "align_reference.json"
 
 
-def _target_json() -> Path:
-    return _plugin_dir() / "align_target.json"
+def _align_json() -> Path:
+    return _plugin_dir() / "align_align.json"
 
 
 # ── Modal operator invocation ─────────────────────────────────────────────────
@@ -127,7 +155,7 @@ def _draw_handler(ctx):
             ctx.draw_circle_2d(s, 11.0, col, 2.0)
             ctx.draw_text_2d((s[0] + 15, s[1] - 6), f"R{i + 1}", col)
 
-    # Draw target points (always, regardless of current pick mode)
+    # Draw align points (always, regardless of current pick mode)
     for i, pt in enumerate(_tba_overlay):
         if pt is None:
             continue
@@ -136,14 +164,14 @@ def _draw_handler(ctx):
         s = ctx.world_to_screen(pt)
         if s:
             ctx.draw_circle_2d(s, 11.0, col, 2.0)
-            ctx.draw_text_2d((s[0] + 15, s[1] - 6), f"T{i + 1}", col)
+            ctx.draw_text_2d((s[0] + 15, s[1] - 6), f"A{i + 1}", col)
 
     # Lines between consecutive set ref points
     ref_set = [p for p in _ref_overlay if p is not None]
     for k in range(len(ref_set) - 1):
         ctx.draw_line_3d(ref_set[k], ref_set[k + 1], (0.2, 0.7, 1.0, 0.45), 1.5)
 
-    # Lines between consecutive set target points
+    # Lines between consecutive set align points
     tba_set = [p for p in _tba_overlay if p is not None]
     for k in range(len(tba_set) - 1):
         ctx.draw_line_3d(tba_set[k], tba_set[k + 1], (1.0, 0.6, 0.1, 0.45), 1.5)
@@ -209,7 +237,9 @@ def _decompose_rotation(R: np.ndarray):
         ry = math.pi / 2 if R[2, 0] < 0 else -math.pi / 2
         rx = math.atan2(-R[1, 2], R[1, 1])
         rz = 0.0
-    return math.degrees(rx), math.degrees(ry), math.degrees(rz)
+    # The app's Ry convention is the inverse of the SVD solver's output.
+    # Rx is correct as-is; so Ry & Rz needs negating.
+    return math.degrees(rx), -math.degrees(ry),-math.degrees(rz)
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
@@ -237,7 +267,7 @@ class PointAlignPanel(lf.ui.Panel):
         self._result_sx = self._result_sy = self._result_sz = 1.0
         self._has_result = False
 
-        self._status = "Pick 3 points on the REFERENCE 3DGS, then 3 on the TARGET."
+        self._status = "Pick 3 points on the REFERENCE 3DGS, then 3 on the align."
 
     @classmethod
     def poll(cls, context) -> bool:
@@ -265,12 +295,12 @@ class PointAlignPanel(lf.ui.Panel):
             model.bind_func(f"ref_pt{slot}_has_pos",
                             self._make_has_pos_fn("ref", i))
 
-        # Point pick buttons & labels — target
+        # Point pick buttons & labels — align
         for i in range(_NUM_POINTS):
             slot = i + 1
             model.bind_func(f"tba_pt{slot}_label", self._make_pt_label_fn("tba", i))
             model.bind_event(f"tba_pick{slot}", self._make_pick_handler("tba", slot))
-            # Nudge buttons target
+            # Nudge buttons align
             for ax in ("x", "y", "z"):
                 model.bind_event(f"tba_pt{slot}_{ax}_minus",
                                  self._make_nudge_handler("tba", slot, ax, -1))
@@ -303,7 +333,8 @@ class PointAlignPanel(lf.ui.Panel):
         model.bind_func("result_ry",  lambda: f"{self._result_ry:+.4f}°")
         model.bind_func("result_rz",  lambda: f"{self._result_rz:+.4f}°")
         model.bind_func("result_sx",  lambda: f"{self._result_sx:.6f}")
-        model.bind_event("do_calculate", self._on_calculate)
+        model.bind_event("do_calculate",            self._on_calculate)
+        model.bind_event("do_calculate_scale_fixed", self._on_calculate_scale_fixed)
         model.bind_event("do_prefill",   self._on_prefill)
 
         # Status
@@ -420,7 +451,7 @@ class PointAlignPanel(lf.ui.Panel):
 
             _ensure_overlay()
             self._status = (
-                f"Click on the {'REFERENCE' if mode == 'ref' else 'TARGET'} model "
+                f"Click on the {'REFERENCE' if mode == 'ref' else 'align'} model "
                 f"to pick Point {slot}…  (ESC to cancel)"
             )
             set_pick_callback(_on_point_picked, slot)
@@ -477,7 +508,7 @@ class PointAlignPanel(lf.ui.Panel):
             except Exception:
                 pass
             self._status = (
-                f"All 3 {'reference' if mode == 'ref' else 'target'} points set."
+                f"All 3 {'reference' if mode == 'ref' else 'align'} points set."
             )
 
         self._has_result = False
@@ -496,10 +527,10 @@ class PointAlignPanel(lf.ui.Panel):
 
     def _on_save_tba(self, handle, event, args):
         if not all(p is not None for p in self._tba_pts):
-            self._status = "Pick all 3 target points before saving."
+            self._status = "Pick all 3 align points before saving."
             self._dirty("status_text", "status_class")
             return
-        self._write_json(_target_json(), self._tba_pts, "target")
+        self._write_json(_align_json(), self._tba_pts, "align")
 
     def _on_load_ref(self, handle, event, args):
         pts, err = self._read_json(_reference_json())
@@ -515,7 +546,7 @@ class PointAlignPanel(lf.ui.Panel):
         self._dirty_all()
 
     def _on_load_tba(self, handle, event, args):
-        pts, err = self._read_json(_target_json())
+        pts, err = self._read_json(_align_json())
         if err:
             self._status = f"Load failed: {err}"
         else:
@@ -523,7 +554,7 @@ class PointAlignPanel(lf.ui.Panel):
             for i in range(_NUM_POINTS):
                 _tba_overlay[i] = pts[i]
             self._has_result = False
-            self._status = f"Loaded target points from {_target_json().name}."
+            self._status = f"Loaded align points from {_align_json().name}."
             _ensure_overlay()
         self._dirty_all()
 
@@ -540,23 +571,22 @@ class PointAlignPanel(lf.ui.Panel):
         for i in range(_NUM_POINTS):
             _tba_overlay[i] = None
         self._has_result = False
-        self._status = "Target points cleared."
+        self._status = "Align points cleared."
         self._dirty_all()
 
     def _on_calculate(self, handle, event, args):
         if not (all(p is not None for p in self._ref_pts) and
                 all(p is not None for p in self._tba_pts)):
-            self._status = "Need all 6 points (3 ref + 3 target) to calculate."
+            self._status = "Need all 6 points (3 ref + 3 align) to calculate."
             self._dirty("status_text", "status_class")
             return
         try:
+            # Solve in world space — picked points are already native scene coords.
             src = np.array(self._tba_pts, dtype=np.float64)
             dst = np.array(self._ref_pts, dtype=np.float64)
             s, R, t = _solve_similarity(src, dst)
             rx, ry, rz = _decompose_rotation(R)
-            self._result_tx = float(t[0])
-            self._result_ty = float(t[1])
-            self._result_tz = float(t[2])
+            self._result_tx, self._result_ty, self._result_tz = _world_t_to_panel(t)
             self._result_rx = rx
             self._result_ry = ry
             self._result_rz = rz
@@ -564,12 +594,61 @@ class PointAlignPanel(lf.ui.Panel):
             self._has_result = True
             self._status = (
                 f"Solved — T({self._result_tx:+.3f}, {self._result_ty:+.3f}, "
-                f"{self._result_tz:+.3f})  R({rx:+.2f}°, {ry:+.2f}°, {rz:+.2f}°)  "
+                f"{self._result_tz:+.3f})  R({self._result_rx:+.2f}°, "
+                f"{self._result_ry:+.2f}°, {self._result_rz:+.2f}°)  "
                 f"Scale={s:.5f} — press [Apply to Edit Panel]."
             )
         except Exception as e:
             self._status = f"Solve error: {e}"
             lf.log.error(f"3PT-ALIGN calc error: {e}")
+        self._dirty_all()
+
+    def _on_calculate_scale_fixed(self, handle, event, args):
+        """Same as _on_calculate but forces scale = 1.0.
+
+        The rotation and translation are re-solved with the scale constrained:
+          R  = same SVD rotation (scale-independent)
+          t  = μ_dst − R·μ_src   (centroid alignment at unit scale)
+        """
+        if not (all(p is not None for p in self._ref_pts) and
+                all(p is not None for p in self._tba_pts)):
+            self._status = "Need all 6 points (3 ref + 3 align) to calculate."
+            self._dirty("status_text", "status_class")
+            return
+        try:
+            # Solve in world space — picked points are already native scene coords.
+            src = np.array(self._tba_pts, dtype=np.float64)
+            dst = np.array(self._ref_pts, dtype=np.float64)
+
+            mu_src = src.mean(axis=0)
+            mu_dst = dst.mean(axis=0)
+            src_c  = src - mu_src
+            dst_c  = dst - mu_dst
+
+            H = src_c.T @ dst_c
+            U, _, Vt = np.linalg.svd(H)
+            d = np.linalg.det(Vt.T @ U.T)
+            R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+            # Translation at unit scale: t = μ_dst − R·μ_src
+            t = mu_dst - R @ mu_src
+
+            rx, ry, rz = _decompose_rotation(R)
+            self._result_tx, self._result_ty, self._result_tz = _world_t_to_panel(t)
+            self._result_rx = rx
+            self._result_ry = ry
+            self._result_rz = rz
+            self._result_sx = self._result_sy = self._result_sz = 1.0
+            self._has_result = True
+            self._status = (
+                f"Solved (scale fixed=1) — T({self._result_tx:+.3f}, "
+                f"{self._result_ty:+.3f}, {self._result_tz:+.3f})  "
+                f"R({self._result_rx:+.2f}°, {self._result_ry:+.2f}°, "
+                f"{self._result_rz:+.2f}°) — press [Apply to Edit Panel]."
+            )
+        except Exception as e:
+            self._status = f"Solve error: {e}"
+            lf.log.error(f"3PT-ALIGN scale-fixed calc error: {e}")
         self._dirty_all()
 
     def _on_prefill(self, handle, event, args):
