@@ -169,6 +169,130 @@ def _unique_node_name(scene, name: str) -> str:
         counter += 1
 
 
+
+# ── Spherical-harmonic rotation ──────────────────────────────────────────────
+#
+# 3DGS stores per-splat view-dependent color as real spherical-harmonic (SH)
+# coefficients, split into:
+#   sh0_raw  : (N, 1,  3)  — degree-0 DC term (ambient color). Direction-less,
+#                            so it never needs to be touched by a rotation.
+#   shN_raw  : (N, K,  3)  — degrees 1..active_sh_degree (K = 3, 8, or 15
+#                            coefficients for degree 1, 2, 3 respectively).
+#                            These ARE directional (they describe how the
+#                            splat's color/specular response varies with
+#                            viewing angle), so when the splat cloud is
+#                            rotated, the SH basis must be rotated by the
+#                            same rotation or the lighting/specular pattern
+#                            stays frozen in the old orientation — which is
+#                            exactly the "look isn't preserved" symptom.
+#
+# Rotation matrices for each SH degree are built by least-squares projection:
+# sample many directions on the unit sphere, evaluate the real-SH basis at
+# both the original and rotated sample directions, then solve for the
+# per-degree rotation matrix that maps one coefficient vector to the other.
+# This sidesteps the well-known fragility of hand-derived recursive Wigner-D
+# formulas (sign/permutation errors are easy to introduce) while remaining
+# dependency-free and exact to floating-point precision for a sample count
+# well above the degree's coefficient count.
+#
+# Ordering convention matches the standard 3DGS / gsplat layout: within each
+# degree l, coefficients are ordered m = -l ... +l using the real SH basis
+# (Y_l^{-l}, ..., Y_l^{0}, ..., Y_l^{l}).
+
+_SH_FIB_SAMPLES = 600   # sample count for the rotation-matrix fit (degree <=3 needs <=15)
+_sh_dirs_cache: np.ndarray | None = None
+
+
+def _sh_sample_dirs() -> np.ndarray:
+    """Fibonacci sphere sample directions, cached across calls."""
+    global _sh_dirs_cache
+    if _sh_dirs_cache is None:
+        n = _SH_FIB_SAMPLES
+        i = np.arange(n)
+        phi = math.pi * (3.0 - math.sqrt(5.0))
+        y = 1 - (i / float(n - 1)) * 2
+        radius = np.sqrt(np.clip(1 - y * y, 0, None))
+        theta = phi * i
+        x = np.cos(theta) * radius
+        z = np.sin(theta) * radius
+        _sh_dirs_cache = np.stack([x, y, z], axis=1)
+    return _sh_dirs_cache
+
+
+def _real_sh_eval(l: int, m: int, d: np.ndarray) -> np.ndarray:
+    """Evaluate one real-SH basis function Y_l^m at unit directions d (N,3).
+    Standard 3DGS / graphics normalization and ordering convention.
+    """
+    x, y, z = d[:, 0], d[:, 1], d[:, 2]
+    if l == 0:
+        return 0.282095 * np.ones(d.shape[0])
+    if l == 1:
+        if m == -1: return 0.488603 * y
+        if m == 0:  return 0.488603 * z
+        if m == 1:  return 0.488603 * x
+    if l == 2:
+        if m == -2: return 1.092548 * x * y
+        if m == -1: return 1.092548 * y * z
+        if m == 0:  return 0.315392 * (2 * z * z - x * x - y * y)
+        if m == 1:  return 1.092548 * x * z
+        if m == 2:  return 0.546274 * (x * x - y * y)
+    if l == 3:
+        if m == -3: return 0.590044 * y * (3 * x * x - y * y)
+        if m == -2: return 2.890611 * x * y * z
+        if m == -1: return 0.457046 * y * (4 * z * z - x * x - y * y)
+        if m == 0:  return 0.373176 * z * (2 * z * z - 3 * x * x - 3 * y * y)
+        if m == 1:  return 0.457046 * x * (4 * z * z - x * x - y * y)
+        if m == 2:  return 1.445306 * z * (x * x - y * y)
+        if m == 3:  return 0.590044 * x * (x * x - 3 * y * y)
+    raise ValueError(f"Unsupported SH degree/order: l={l}, m={m}")
+
+
+def _sh_rotation_matrix_for_degree(l: int, R: np.ndarray, dirs: np.ndarray) -> np.ndarray:
+    """Per-degree real-SH rotation matrix M (shape (2l+1, 2l+1)) such that
+    c_rotated = M @ c_original correctly rotates a degree-l SH coefficient
+    vector by the 3x3 rotation matrix R applied to the underlying geometry.
+    """
+    ms = list(range(-l, l + 1))
+    A  = np.stack([_real_sh_eval(l, m, dirs) for m in ms], axis=1)        # (S, 2l+1) at original dirs
+    Aq = np.stack([_real_sh_eval(l, m, dirs @ R) for m in ms], axis=1)    # (S, 2l+1) at dirs rotated by R
+    M, *_ = np.linalg.lstsq(A, Aq, rcond=None)
+    return M
+
+
+def _sh_rotation_matrices(R: np.ndarray, max_degree: int) -> list[np.ndarray]:
+    """Return [M_1, M_2, ..., M_max_degree], the real-SH rotation matrices
+    for each degree from 1 to max_degree, for rotation matrix R.
+    """
+    if max_degree < 1:
+        return []
+    dirs = _sh_sample_dirs()
+    return [_sh_rotation_matrix_for_degree(l, R, dirs) for l in range(1, max_degree + 1)]
+
+
+def _rotate_shN(shN: np.ndarray, R: np.ndarray, active_degree: int) -> np.ndarray:
+    """Rotate the directional SH coefficients (degrees 1..active_degree) by
+    rotation matrix R. shN has shape (N, K, 3) — K coefficients, 3 color
+    channels. Channels are rotated independently (color does not mix).
+    """
+    if active_degree < 1 or shN.shape[1] == 0:
+        return shN
+
+    mats = _sh_rotation_matrices(R, active_degree)
+    out = shN.copy()
+    offset = 0
+    for l in range(1, active_degree + 1):
+        n_coef = 2 * l + 1
+        if offset + n_coef > shN.shape[1]:
+            break  # fewer coefficients stored than active_degree implies
+        block = shN[:, offset:offset + n_coef, :]           # (N, n_coef, 3)
+        Ml = mats[l - 1].astype(np.float32)                  # (n_coef, n_coef)
+        # result[n, i, c] = sum_j Ml[i, j] * block[n, j, c]   (c_rot = Ml @ c, verified against ground truth)
+        out[:, offset:offset + n_coef, :] = np.einsum('ij,njc->nic', Ml, block)
+        offset += n_coef
+
+    return out
+
+
 def _bake(node_name: str) -> str:
     """Permanently write the node transform into its Gaussian data.
     Returns an empty string on success or an error message on failure.
@@ -199,6 +323,16 @@ def _bake(node_name: str) -> str:
             rb   = _quat_mul_batch(nq, rots).astype(np.float32)
             rb  /= np.linalg.norm(rb, axis=-1, keepdims=True)
             sd.rotation_raw[:] = lf.Tensor.from_numpy(rb).cuda()
+
+            # Rotate the directional SH coefficients (degrees 1..N) so the
+            # view-dependent color/specular response follows the new
+            # orientation instead of staying frozen in the old one.
+            active_degree = int(getattr(sd, "active_sh_degree", 0))
+            shN_t = getattr(sd, "shN_raw", None)
+            if active_degree >= 1 and shN_t is not None and shN_t.shape[1] > 0:
+                shN = shN_t.cpu().numpy().astype(np.float32)
+                shN_rot = _rotate_shN(shN, R, active_degree)
+                sd.shN_raw[:] = lf.Tensor.from_numpy(shN_rot).cuda()
         lf.set_node_transform(node_name, [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
         return ""
     except Exception as e:
