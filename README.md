@@ -1,6 +1,6 @@
 # LFS Enhanced Edit Plugin
 
-**Version:** 0.2.9
+**Version:** 0.2.10
 **Author:** Brian Davis (bb6)  
 **Requires:** Lichtfeld Studio ≥ 0.5.1
 
