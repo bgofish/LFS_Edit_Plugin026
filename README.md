@@ -263,9 +263,8 @@ Each entry records:
 ## Changelog
 ### 0.2.9
 - Corrected the 'SH1+' appearance on [Bake] (thought this was fixed previously)
-- Added GIZMO editing capability to the  6 points
-<img width="1293" height="540" alt="image" src="https://github.com/user-attachments/assets/bef512a1-af8b-415a-86c8-7294ff931eb9" />
-
+- Added GIZMO editing capability to all 6 points of the "3 point align"
+<img width="1355" height="670" alt="image" src="https://github.com/user-attachments/assets/f15f2282-fb2c-432c-8cc3-06512ecf57d2" />
 
 ### 0.2.8
 - Added Additional 3Point Align with scale fixed option  & corrected the  -/+ of the directions for alignments
