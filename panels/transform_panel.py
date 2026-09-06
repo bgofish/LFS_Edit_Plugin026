@@ -178,82 +178,125 @@ def _unique_node_name(scene, name: str) -> str:
 
 
 # ── Spherical-harmonic rotation ───────────────────────────────────────────────
-# 3DGS splits view-dependent color into:
-#   sh0_raw : (N,1,3)  degree-0 DC/ambient — direction-independent, never rotated.
-#   shN_raw : (N,K,3)  degrees 1..active_sh_degree (K = 3/8/15 for deg 1/2/3).
-#             These ARE directional. Without rotating them when the geometry is
-#             rotated, the specular/view-dependent shading stays frozen pointing
-#             in the original object-space directions — causing the look to change
-#             visually after a rotate+bake. This is the bug being fixed here.
 #
-# Per-degree rotation matrices are built by a least-squares projection approach:
-# sample 600 directions on the unit sphere, evaluate the real-SH basis at both
-# the original and R-rotated directions, then lstsq for M s.t. c_rot = M @ c.
-# Numerically verified: identity/orthonormality/function-values/composition/360°.
+# This implementation mirrors LichtFeld Studio's native rotate_sh_coefficients()
+# from src/core/splat_data_transform.cpp (LFS 0.5.3-198-gc09f7cbc).
+#
+# Key points:
+#   - shN_raw is canonical [N, K, 3] in the Python API.
+#   - LichtFeld's SH basis has different signs to the generic "standard 3DGS" basis.
+#   - R is the local/object -> world rotation.
+#   - Pass R directly (not R.T) — dirs @ R inside _sh_rot_matrix already computes
+#     R^{-1} d in row-vector convention, matching LFS C++: local_dir = rot_inv * world_dir.
 
-_SH_FIB_N      = 600
+_SH_C1   = 0.48860251190291987
+
+_SH_C2_0 = 1.0925484305920792
+_SH_C2_1 = 0.94617469575755997
+_SH_C2_2 = 0.31539156525251999
+_SH_C2_3 = 0.54627421529603959
+
+_SH_C3_0 = 0.59004358992664352
+_SH_C3_1 = 2.8906114426405538
+_SH_C3_2 = 0.45704579946446572
+_SH_C3_3 = 0.3731763325901154
+_SH_C3_4 = 1.4453057213202769
+
+_SH_FIB_N      = 96   # same count as LichtFeld native implementation
 _sh_dirs_cache = None
 
 
 def _sh_sample_dirs() -> np.ndarray:
+    """Return the same 96 Fibonacci-sphere samples used by LichtFeld."""
     global _sh_dirs_cache
     if _sh_dirs_cache is None:
-        n    = _SH_FIB_N
-        i    = np.arange(n)
-        phi  = math.pi * (3.0 - math.sqrt(5.0))
-        y    = 1.0 - (i / float(n - 1)) * 2.0
-        r    = np.sqrt(np.clip(1.0 - y * y, 0, None))
-        t    = phi * i
-        _sh_dirs_cache = np.stack([np.cos(t) * r, y, np.sin(t) * r], axis=1)
+        count        = _SH_FIB_N
+        golden_angle = 2.39996322972865332
+        dirs = np.empty((count, 3), dtype=np.float64)
+        for i in range(count):
+            t          = (float(i) + 0.5) / float(count)
+            y          = 1.0 - 2.0 * t
+            r          = math.sqrt(max(0.0, 1.0 - y * y))
+            theta      = golden_angle * float(i)
+            dirs[i, 0] = math.cos(theta) * r
+            dirs[i, 1] = y
+            dirs[i, 2] = math.sin(theta) * r
+        _sh_dirs_cache = dirs
     return _sh_dirs_cache
 
 
-def _real_sh_eval(l: int, m: int, d: np.ndarray) -> np.ndarray:
-    """Real SH basis Y_l^m at unit directions d (N,3). Standard 3DGS convention."""
-    x, y, z = d[:, 0], d[:, 1], d[:, 2]
+def _real_sh_band_basis(l: int, d: np.ndarray) -> np.ndarray:
+    """Evaluate one LichtFeld SH band at directions d (N,3). Returns (N, 2l+1)."""
+    x = d[:, 0]; y = d[:, 1]; z = d[:, 2]
+    xx = x * x;  yy = y * y;  zz = z * z
     if l == 1:
-        if m == -1: return 0.488603 * y
-        if m ==  0: return 0.488603 * z
-        if m ==  1: return 0.488603 * x
+        return np.stack([
+            -_SH_C1 * y,
+             _SH_C1 * z,
+            -_SH_C1 * x,
+        ], axis=1)
     if l == 2:
-        if m == -2: return 1.092548 * x * y
-        if m == -1: return 1.092548 * y * z
-        if m ==  0: return 0.315392 * (2*z*z - x*x - y*y)
-        if m ==  1: return 1.092548 * x * z
-        if m ==  2: return 0.546274 * (x*x - y*y)
+        return np.stack([
+             _SH_C2_0 * x * y,
+            -_SH_C2_0 * y * z,
+             _SH_C2_1 * zz - _SH_C2_2,
+            -_SH_C2_0 * x * z,
+             _SH_C2_3 * (xx - yy),
+        ], axis=1)
     if l == 3:
-        if m == -3: return 0.590044 * y * (3*x*x - y*y)
-        if m == -2: return 2.890611 * x * y * z
-        if m == -1: return 0.457046 * y * (4*z*z - x*x - y*y)
-        if m ==  0: return 0.373176 * z * (2*z*z - 3*x*x - 3*y*y)
-        if m ==  1: return 0.457046 * x * (4*z*z - x*x - y*y)
-        if m ==  2: return 1.445306 * z * (x*x - y*y)
-        if m ==  3: return 0.590044 * x * (x*x - 3*y*y)
-    raise ValueError(f"unsupported l={l} m={m}")
+        return np.stack([
+             _SH_C3_0 * y * (-3.0 * xx + yy),
+             _SH_C3_1 * x * y * z,
+             _SH_C3_2 * y * (1.0 - 5.0 * zz),
+             _SH_C3_3 * z * (5.0 * zz - 3.0),
+             _SH_C3_2 * x * (1.0 - 5.0 * zz),
+             _SH_C3_4 * z * (xx - yy),
+             _SH_C3_0 * x * (-xx + 3.0 * yy),
+        ], axis=1)
+    raise ValueError(f"unsupported SH band {l}")
+
+
+def _sh_band_offset(l: int) -> int:
+    """Offset of band l inside shN (which omits l=0): l=1->0, l=2->3, l=3->8."""
+    return l * l - 1
 
 
 def _sh_rot_matrix(l: int, R: np.ndarray, dirs: np.ndarray) -> np.ndarray:
-    ms  = list(range(-l, l + 1))
-    A   = np.stack([_real_sh_eval(l, m, dirs)     for m in ms], axis=1)
-    Aq  = np.stack([_real_sh_eval(l, m, dirs @ R) for m in ms], axis=1)
-    M, *_ = np.linalg.lstsq(A, Aq, rcond=None)
-    return M  # c_rotated = M @ c_original  (verified against function-value ground truth)
+    """Coefficient rotation matrix K for band l, matching LichtFeld's native solver.
+    R is local->world. dirs @ R gives local directions (R^{-1} d in row-vec convention).
+    Apply as: c_rotated = c_original @ K
+    """
+    local_dirs  = dirs @ R
+    world_basis = _real_sh_band_basis(l, dirs)
+    local_basis = _real_sh_band_basis(l, local_dirs)
+    WTW = world_basis.T @ world_basis
+    WTL = world_basis.T @ local_basis
+    try:
+        K_transpose = np.linalg.solve(WTW, WTL)
+    except np.linalg.LinAlgError:
+        K_transpose, *_ = np.linalg.lstsq(WTW, WTL, rcond=None)
+    return K_transpose.T
 
 
-def _rotate_shN(shN: np.ndarray, R: np.ndarray, active_degree: int) -> np.ndarray:
-    """Rotate shN (N,K,3) in-place by rotation matrix R for degrees 1..active_degree."""
-    if active_degree < 1 or shN.shape[1] == 0:
+def _rotate_shN(shN: np.ndarray, R: np.ndarray, max_degree: int) -> np.ndarray:
+    """Rotate LichtFeld shN [N,K,3] coefficients by local->world rotation R."""
+    if max_degree < 1 or shN.ndim != 3 or shN.shape[1] == 0:
         return shN
-    dirs   = _sh_sample_dirs()
-    out    = shN.copy()
-    offset = 0
-    for l in range(1, active_degree + 1):
-        nc = 2 * l + 1
-        if offset + nc > shN.shape[1]:
+    dirs = _sh_sample_dirs()
+    out  = shN.copy()
+    available = shN.shape[1]
+    for l in range(1, max_degree + 1):
+        nc     = 2 * l + 1
+        offset = _sh_band_offset(l)
+        if offset + nc > available:
             break
-        M = _sh_rot_matrix(l, R, dirs).astype(np.float32)
-        out[:, offset:offset + nc, :] = np.einsum("ij,njc->nic", M, shN[:, offset:offset + nc, :])
-        offset += nc
+        K = _sh_rot_matrix(l, R, dirs).astype(np.float32, copy=False)
+        # c_rotated = c_original @ K  ->  output[n,i,c] = sum_j K[j,i] * input[n,j,c]
+        out[:, offset:offset + nc, :] = np.einsum(
+            "ji,njc->nic", K,
+            shN[:, offset:offset + nc, :],
+            optimize=True,
+        )
     return out
 
 
@@ -284,6 +327,7 @@ def _bake(node_name: str) -> str:
         rots    = sd.rotation_raw.cpu().numpy().astype(np.float32)
         opacity = sd.opacity_raw.cpu().numpy().astype(np.float32)
         active_degree = int(sd.active_sh_degree)
+        max_degree    = int(sd.max_sh_degree)
         scene_scale   = float(sd.scene_scale)
 
         # Apply transform to each field
@@ -300,13 +344,13 @@ def _bake(node_name: str) -> str:
             rb  /= np.linalg.norm(rb, axis=-1, keepdims=True)
             rots_new = rb
 
-            # shN_raw cannot be written in-place (LFS ignores the write).
-            # Must rebuild the node via scene.add_splat to update SH data.
             # sh0_raw (degree-0 DC) is view-independent — never needs rotating.
-            # shN_raw (degrees 1+) must be rotated by R.T so the view-dependent
-            # response follows the geometry rotation after the node resets to identity.
-            if active_degree >= 1 and shN.shape[1] > 0:
-                shN_new = np.ascontiguousarray(_rotate_shN(shN, R.T, active_degree))
+            # shN_raw is canonical [N,K,3] in the Python API for LFS 0.5.3.
+            # R is local/object -> world rotation. _rotate_shN() performs the
+            # corresponding inverse transform on viewing directions internally,
+            # matching LichtFeld's native rotate_sh_coefficients().
+            if max_degree >= 1 and shN.shape[1] > 0:
+                shN_new = np.ascontiguousarray(_rotate_shN(shN, R, max_degree))
             else:
                 shN_new = shN
         else:
@@ -316,26 +360,44 @@ def _bake(node_name: str) -> str:
         def _t(arr):
             return lf.Tensor.from_numpy(np.ascontiguousarray(arr)).cuda()
 
-        # Rebuild the node with all transformed data
-        parent_id = getattr(node, "parent_id", None)
-        s.remove_node(node_name)
-        s.add_splat(
-            node_name,
-            _t(means_new),
-            _t(sh0),
-            _t(shN_new),
-            _t(scaling_new),
-            _t(rots_new),
-            _t(opacity),
-            active_degree,
-            scene_scale,
-        )
-        # Re-parent if the node was under a group
-        if parent_id is not None:
-            try:
-                s.reparent(node_name, parent_id)
-            except Exception:
-                pass
+        needs_sh_rotation = (not np.allclose(R, np.eye(3), atol=1e-5)
+                             and max_degree >= 1 and shN.shape[1] > 0)
+
+        # Write all non-SH fields in-place (these work reliably)
+        sd.means_raw[:]   = _t(means_new)
+        sd.scaling_raw[:] = _t(scaling_new)
+        if not np.allclose(R, np.eye(3), atol=1e-5):
+            sd.rotation_raw[:] = _t(rots_new)
+
+        # shN_raw: try every known in-place write pattern.
+        # sd.shN_raw[:] = tensor is silently ignored by LFS.
+        # Chunked slice assignment updates the tensor but may need explicit
+        # cache invalidation to flush to the GPU render buffer.
+        if needs_sh_rotation:
+            # All in-place write paths for shN_raw are blocked by LFS.
+            # Must use remove_node + add_splat. Test scene_scale=0.0 to
+            # let LFS auto-compute from the data rather than passing 0.5
+            # which may not match the rotated geometry extents.
+            parent_id = getattr(node, "parent_id", None)
+            s.remove_node(node_name)
+            s.add_splat(
+                node_name,
+                _t(means_new),
+                _t(sh0),
+                _t(shN_new),
+                _t(scaling_new),
+                _t(rots_new),
+                _t(opacity),
+                active_degree,
+                0.0,            # let LFS auto-compute scene_scale
+            )
+            if parent_id is not None:
+                try:
+                    s.reparent(node_name, parent_id)
+                except Exception:
+                    pass
+            shs_rb = sd.get_shs().cpu().numpy() if s.get_node(node_name) else None
+            lf.log.info(f"EDIT bake: add_splat done — scene_scale passed=0.0 (auto)")
 
         lf.set_node_transform(node_name, [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
         return ""
