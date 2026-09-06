@@ -1,8 +1,8 @@
 # LFS Enhanced Edit Plugin
 
-**Version:** 0.2.8  
+**Version:** 0.2.9
 **Author:** Brian Davis (bb6)  
-**Requires:** Lichtfeld Studio ≥ 0.5.1  - ALIGNMENT PICK CRASHES Some Nightly Builds - Tested with 0.5.2 Stable 
+**Requires:** Lichtfeld Studio ≥ 0.5.1
 
 A comprehensive transform editing panel for Gaussian Splat nodes in Lichtfeld Studio. Provides precision translation, rotation, and scale controls with live preview, alignment tools, baking, merging, and splat management — all from a single panel.
 
@@ -261,6 +261,11 @@ Each entry records:
 ---
 
 ## Changelog
+### 0.2.9
+- Corrected the 'SH1+' appearance on [Bake] (thought this was fixed previously)
+- Added GIZMO editing capability to the  6 points
+<img width="1293" height="540" alt="image" src="https://github.com/user-attachments/assets/bef512a1-af8b-415a-86c8-7294ff931eb9" />
+
 
 ### 0.2.8
 - Added Additional 3Point Align with scale fixed option  & corrected the  -/+ of the directions for alignments
