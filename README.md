@@ -1,6 +1,6 @@
 # LFS Enhanced Edit Plugin
 
-**Version:** 0.2.10
+**Version:** 0.2.11
 **Author:** Brian Davis (bb6)  
 **Requires:** Lichtfeld Studio ≥ 0.5.1
 
@@ -261,6 +261,10 @@ Each entry records:
 ---
 
 ## Changelog
+### 0.2.11
+- creates a separate file for the 3dAlignment called 3dAlign.json
+<img width="1325" height="775" alt="image" src="https://github.com/user-attachments/assets/44e3c9bc-eea2-4b3e-be85-c5155973300d" />
+
 ### 0.2.10
 - Corrected the 'SH1+' appearance on [Bake] (thought this was fixed previously)
 
