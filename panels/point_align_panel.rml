@@ -8,9 +8,10 @@
   <span class="text-muted">Step 2: Pick 3 points on the ALIGN 3DGS.</span><br/>
   <span class="text-muted">Step 3: Press [Calculate Transform]</span><br/>
   <span class="text-muted">Step 4: Press [Apply to the Edit panel]</span><br/>  
-  <span class="text-muted">Step 5: Switch to [Edit] and with Align 3dGS selected - Press [Read 3dAlign].</span><br/> 
+  <span class="text-muted">Step 5: Switch to [Edit] and with Align 3dGS selected - Press [Read Settings].</span><br/> 
   <span class="text-muted">Step 6: If you are happy with the transform then Press [Bake Transform] to make changes permanent.</span><br/> 
   <span class="text-muted">Note:All transform settings will revert to 0 after Bake Transform</span><br/>
+  <span class="text-muted" style="color:#4ade80;">Tip: once a point is picked, click its green [Edit] button for a drag gizmo (or use the nudge buttons below).</span><br/>
    <div class="separator"></div>
 
   <!-- ── ADJUST POINTS ── -->
@@ -135,16 +136,28 @@
   <div class="btn-row">
     <button class="btn" data-event-click="ref_pick1"
             title="Click to start picking Reference Point 1 on the model">{{ref_pt1_label}}</button>
+    <button class="btn" data-if="ref_pt1_edit_idle" data-event-click="ref_edit1"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="ref_pt1_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
   <div class="btn-row">
     <button class="btn" data-event-click="ref_pick2"
             title="Click to start picking Reference Point 2 on the model">{{ref_pt2_label}}</button>
+    <button class="btn" data-if="ref_pt2_edit_idle" data-event-click="ref_edit2"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="ref_pt2_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
   <div class="btn-row">
     <button class="btn" data-event-click="ref_pick3"
             title="Click to start picking Reference Point 3 on the model">{{ref_pt3_label}}</button>
+    <button class="btn" data-if="ref_pt3_edit_idle" data-event-click="ref_edit3"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="ref_pt3_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
-
+  <div class="separator"></div>
   <div class="btn-row">
     <button class="btn" data-event-click="save_ref"
             title="Save reference points to align_reference.json">Save Ref Points</button>
@@ -162,16 +175,28 @@
   <div class="btn-row">
     <button class="btn" data-event-click="tba_pick1"
             title="Click to start picking Align Point 1 on the model">{{tba_pt1_label}}</button>
+    <button class="btn" data-if="tba_pt1_edit_idle" data-event-click="tba_edit1"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="tba_pt1_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
   <div class="btn-row">
     <button class="btn" data-event-click="tba_pick2"
             title="Click to start picking Align Point 2 on the model">{{tba_pt2_label}}</button>
+    <button class="btn" data-if="tba_pt2_edit_idle" data-event-click="tba_edit2"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="tba_pt2_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
   <div class="btn-row">
     <button class="btn" data-event-click="tba_pick3"
             title="Click to start picking Align Point 3 on the model">{{tba_pt3_label}}</button>
+    <button class="btn" data-if="tba_pt3_edit_idle" data-event-click="tba_edit3"
+            style="color:#4ade80;" title="Place a drag gizmo at this point; dragging it updates the point live.">Edit</button>
+    <button class="btn" data-if="tba_pt3_editing" data-event-click="stop_edit_point"
+            style="color:#f87171;" title="Remove the drag gizmo and keep the current position.">Stop Editing</button>
   </div>
-
+  <div class="separator"></div>
   <div class="btn-row">
     <button class="btn" data-event-click="save_tba"
             title="Save align points to align_align.json">Save Align Points</button>
@@ -222,7 +247,7 @@
 
     <div class="btn-row">
       <button class="btn btn--full" data-event-click="do_prefill"
-              title="Write the solved transform into 3dAlign.json — then click [Read 3dAlign] on the Edit tab">Write to 3dAlign.json</button>
+              title="Write the solved transform into 3dAlign.json — then click Load [Read 3dAlign] on the Edit tab">Write to 3dAlign</button>
     </div>
   </div>
 

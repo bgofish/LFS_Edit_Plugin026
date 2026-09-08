@@ -65,6 +65,61 @@ from ..operators.point_align_picker import (
     was_pick_cancelled,
 )
 
+# ── Edit-gizmo tool registration ────────────────────────────────────────────
+# LFS gizmos are driven by the currently ACTIVE TOOL (a ToolDef with
+# gizmo="translate"), not by node selection alone -- selecting a node with
+# no translate-tool active shows no gizmo at all. So Edit needs its own
+# registered tool to switch into while dragging, and switches back to
+# whatever was active before on Stop Editing. (Ported from CamPath_Json's
+# main_panel.py edit-gizmo implementation.)
+
+_EDIT_TOOL_ID = "LFS_Edit_Plugin.tools.point_edit"
+_edit_tool_registered = False
+
+
+def _ensure_edit_tool():
+    global _edit_tool_registered
+    if _edit_tool_registered:
+        return
+    try:
+        from lfs_plugins.tool_defs.definition import ToolDef
+        from lfs_plugins.tools import ToolRegistry
+        tool = ToolDef(
+            id=_EDIT_TOOL_ID,
+            label="Edit Align Point",
+            icon="translation",
+            group="transform",
+            order=500,
+            description="Drag the gizmo to move the picked Reference/Align point.",
+            gizmo="translate",
+        )
+        ToolRegistry.register_tool(tool)
+        _edit_tool_registered = True
+    except Exception as e:
+        lf.log.warning(f"3PT-ALIGN edit-tool registration error: {e}")
+
+
+def _unregister_edit_tool():
+    global _edit_tool_registered
+    if not _edit_tool_registered:
+        return
+    try:
+        from lfs_plugins.tools import ToolRegistry
+        ToolRegistry.unregister_tool(_EDIT_TOOL_ID)
+    except Exception:
+        pass
+    _edit_tool_registered = False
+
+
+def _flip_yz(pos):
+    """Convert between pick/world-space (x, y, z) -- used by the picked-point
+    tuples and world_to_screen() -- and scene-node transform space, which
+    uses a Y/Z convention negated from it. Self-inverse: apply the same
+    conversion both when seeding the gizmo node and when reading its
+    dragged transform back."""
+    x, y, z = pos
+    return (x, -y, -z)
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 _NUM_POINTS = 3
 
@@ -260,6 +315,15 @@ class PointAlignPanel(lf.ui.Panel):
         self._ref_pts: list = [None, None, None]
         self._tba_pts: list = [None, None, None]
 
+        # Edit gizmo (drag-to-move) state — 0=idle, 1-3=editing that slot.
+        # Backed by a throwaway proxy locator node since LFS gizmos bind to
+        # real scene-node transforms, not bare tuples; created on Edit,
+        # deleted on Stop Editing. Mirrors CamPath_Json's implementation.
+        self._editing_which    = 0
+        self._editing_mode     = ""      # "ref" or "tba"
+        self._editing_node_name = None
+        self._prev_tool_id      = None
+
         self._step_size  = 0.01   # active step for nudge buttons
 
         self._result_tx = self._result_ty = self._result_tz = 0.0
@@ -294,6 +358,13 @@ class PointAlignPanel(lf.ui.Panel):
                                  self._make_nudge_handler("ref", slot, ax, +1))
             model.bind_func(f"ref_pt{slot}_has_pos",
                             self._make_has_pos_fn("ref", i))
+            # Edit gizmo buttons ref
+            model.bind_event(f"ref_edit{slot}",
+                             self._make_edit_handler("ref", slot))
+            model.bind_func(f"ref_pt{slot}_editing",
+                            self._make_editing_fn("ref", slot))
+            model.bind_func(f"ref_pt{slot}_edit_idle",
+                            self._make_edit_idle_fn("ref", i, slot))
 
         # Point pick buttons & labels — align
         for i in range(_NUM_POINTS):
@@ -308,6 +379,13 @@ class PointAlignPanel(lf.ui.Panel):
                                  self._make_nudge_handler("tba", slot, ax, +1))
             model.bind_func(f"tba_pt{slot}_has_pos",
                             self._make_has_pos_fn("tba", i))
+            # Edit gizmo buttons align
+            model.bind_event(f"tba_edit{slot}",
+                             self._make_edit_handler("tba", slot))
+            model.bind_func(f"tba_pt{slot}_editing",
+                            self._make_editing_fn("tba", slot))
+            model.bind_func(f"tba_pt{slot}_edit_idle",
+                            self._make_edit_idle_fn("tba", i, slot))
 
         # Step size buttons
         for step_val, step_lbl in _STEP_OPTIONS:
@@ -323,6 +401,9 @@ class PointAlignPanel(lf.ui.Panel):
         model.bind_event("load_tba",  self._on_load_tba)
         model.bind_event("clear_ref", self._on_clear_ref)
         model.bind_event("clear_tba", self._on_clear_tba)
+
+        # Edit gizmo — stop button (shared across all points)
+        model.bind_event("stop_edit_point", self._on_stop_edit_point)
 
         # Calculate & apply
         model.bind_func("has_result", lambda: self._has_result)
@@ -345,7 +426,8 @@ class PointAlignPanel(lf.ui.Panel):
 
     def on_update(self, doc):
         changed = self._process_pending_pick()
-        if _overlay_active():
+        self._poll_editing_point()
+        if _overlay_active() or self._editing_which:
             try:
                 lf.ui.request_redraw()
             except Exception:
@@ -353,6 +435,7 @@ class PointAlignPanel(lf.ui.Panel):
         return changed
 
     def on_unmount(self, doc):
+        self._stop_editing_point()
         doc.remove_data_model("point_align_panel")
         self._handle = None
 
@@ -374,6 +457,19 @@ class PointAlignPanel(lf.ui.Panel):
         def _fn():
             pts = self._ref_pts if mode == "ref" else self._tba_pts
             return pts[idx] is not None
+        return _fn
+
+    def _make_editing_fn(self, mode: str, slot: int):
+        return lambda: self._editing_mode == mode and self._editing_which == slot
+
+    def _make_edit_idle_fn(self, mode: str, idx: int, slot: int):
+        """True when the point has a position and isn't the one being edited
+        right now — i.e. when the [Edit] button (not [Stop Editing]) should
+        show for this point."""
+        def _fn():
+            pts = self._ref_pts if mode == "ref" else self._tba_pts
+            is_editing_this = self._editing_mode == mode and self._editing_which == slot
+            return pts[idx] is not None and not is_editing_this
         return _fn
 
     def _make_step_handler(self, step_val: float):
@@ -412,6 +508,198 @@ class PointAlignPanel(lf.ui.Panel):
                 pass
         return _handler
 
+    # ── Edit gizmo (drag-to-move) ─────────────────────────────────────────────
+    # LFS gizmos bind to a real scene-node's transform, not a bare tuple, so
+    # "Edit" creates a small throwaway proxy/locator node, seeds its transform
+    # with the picked point, and selects it so the built-in Move gizmo
+    # attaches. While editing, on_update() polls the node's transform each
+    # tick and mirrors it back into self._ref_pts / self._tba_pts. "Stop
+    # Editing" deletes the node -- nothing lingers in the Scene tree after.
+    # Ported from CamPath_Json's Orbit-Centre/Look-Target edit gizmo.
+
+    def _edit_node_name(self, mode: str, slot: int) -> str:
+        label = "Ref" if mode == "ref" else "Align"
+        return f"[3PT Align] {label} Pt {slot} (editing)"
+
+    def _make_edit_handler(self, mode: str, slot: int):
+        def _handler(handle, event, args):
+            self._start_editing_point(mode, slot)
+        return _handler
+
+    def _start_editing_point(self, mode: str, slot: int):
+        idx = slot - 1
+        pts = self._ref_pts if mode == "ref" else self._tba_pts
+        pos = pts[idx]
+        if pos is None:
+            self._status = "Pick this point before editing it."
+            self._dirty("status_text", "status_class")
+            return
+
+        if self._editing_mode == mode and self._editing_which == slot:
+            return  # already editing this exact point
+        if self._editing_which:
+            self._stop_editing_point()
+
+        # Cancel any in-progress pick session -- picking and dragging a
+        # gizmo at the same time would fight over clicks in the viewport.
+        global _picking_which, _picking_mode
+        if _picking_which > 0:
+            try:
+                lf.ui.ops.cancel_modal()
+            except Exception:
+                pass
+            clear_pick_callback()
+            _picking_which = 0
+            _picking_mode  = ""
+
+        if not lf.has_scene():
+            self._status = "No scene loaded -- can't place an edit gizmo."
+            self._dirty("status_text", "status_class")
+            return
+
+        # Capture the currently-active tool BEFORE we touch selection at all
+        # -- select_node() below may itself auto-switch the active tool to
+        # "Select", and if we captured after that we'd just be recording our
+        # own side effect and always restoring into Select on Stop Editing.
+        try:
+            self._prev_tool_id = lf.ui.get_active_tool()
+        except Exception:
+            self._prev_tool_id = None
+
+        name = self._edit_node_name(mode, slot)
+        try:
+            scene = lf.get_scene()
+            try:
+                # Clean up a stale node from a previous session that didn't
+                # get removed (e.g. the app closed mid-edit).
+                scene.remove_node(name, keep_children=False)
+            except Exception:
+                pass
+            scene.add_group(name)
+            node_pos = _flip_yz(pos)
+            matrix = lf.compose_transform(
+                translation=list(node_pos), euler_deg=[0.0, 0.0, 0.0], scale=[1.0, 1.0, 1.0]
+            )
+            lf.set_node_transform(name, matrix)
+            lf.select_node(name)
+
+            # Switch to the translate-gizmo tool -- selection alone doesn't
+            # show a gizmo, the active tool has to be one with gizmo="translate".
+            _ensure_edit_tool()
+            from lfs_plugins.tools import ToolRegistry
+            ToolRegistry.set_active(_EDIT_TOOL_ID)
+            try:
+                lf.ui.request_redraw()
+            except Exception:
+                pass
+        except Exception as e:
+            lf.log.warning(f"3PT-ALIGN edit-gizmo start error: {e}")
+            self._status = f"Couldn't start editing: {e}"
+            self._dirty("status_text", "status_class")
+            return
+
+        self._editing_mode      = mode
+        self._editing_which     = slot
+        self._editing_node_name = name
+        label = "REFERENCE" if mode == "ref" else "ALIGN"
+        self._status = f"Drag the gizmo to move {label} Point {slot}..."
+        self._dirty_all()
+
+    def _stop_editing_point(self):
+        if not self._editing_which:
+            return
+        name = self._editing_node_name
+        # Deselect BEFORE removing the node -- removing it while still
+        # selected can leave a stale selection reference behind that the
+        # Select-tool's floating toolbar doesn't clear on its own.
+        try:
+            lf.deselect_all()
+        except Exception:
+            pass
+        try:
+            scene = lf.get_scene()
+            if scene is not None and name:
+                scene.remove_node(name, keep_children=False)
+        except Exception as e:
+            lf.log.warning(f"3PT-ALIGN edit-gizmo cleanup error: {e}")
+
+        restored = False
+        try:
+            from lfs_plugins.tools import ToolRegistry
+            # NOTE: '' is a legitimate "no tool was active" value, not an
+            # absence of one -- `if self._prev_tool_id:` would silently skip
+            # restoring it since empty string is falsy in Python.
+            # `is not None` treats '' as something to actively restore.
+            if self._prev_tool_id is not None:
+                restored = ToolRegistry.set_active(self._prev_tool_id)
+        except Exception as e:
+            lf.log.warning(f"3PT-ALIGN restore-tool error: {e}")
+
+        # Belt-and-braces: switching tools can itself re-populate a
+        # selection (some tools auto-select the last-touched node when they
+        # activate), which is what re-opens the Select-tool's floating
+        # toolbar even though we deselected above. Deselect again *after*
+        # the tool swap so nothing is selected in the tool we land back on.
+        try:
+            lf.deselect_all()
+        except Exception:
+            pass
+
+        try:
+            now_active = ToolRegistry.get_active_id()
+        except Exception:
+            now_active = "?"
+        lf.log.info(
+            f"3PT-ALIGN stop-edit: prev_tool_id={self._prev_tool_id!r} "
+            f"restore_call_returned={restored} active_tool_now={now_active!r}"
+        )
+
+        self._prev_tool_id      = None
+        self._editing_mode      = ""
+        self._editing_which     = 0
+        self._editing_node_name = None
+        # Remove the edit tool from the toolbar again -- it should only be
+        # visible/selectable there for the duration of an active edit
+        # session, not sit around as a standing option.
+        _unregister_edit_tool()
+        try:
+            lf.ui.request_redraw()
+        except Exception:
+            pass
+
+    def _poll_editing_point(self):
+        """Called every on_update() tick while an edit gizmo is active."""
+        if not self._editing_which or not self._editing_node_name:
+            return
+        try:
+            matrix = lf.get_node_transform(self._editing_node_name)
+            node_pos = lf.decompose_transform(matrix)["translation"]
+            x, y, z = _flip_yz((float(node_pos[0]), float(node_pos[1]), float(node_pos[2])))
+        except Exception:
+            return
+
+        idx  = self._editing_which - 1
+        mode = self._editing_mode
+        new_pt = (x, y, z)
+        if mode == "ref":
+            self._ref_pts[idx] = new_pt
+            _ref_overlay[idx]  = new_pt
+        else:
+            self._tba_pts[idx] = new_pt
+            _tba_overlay[idx]  = new_pt
+
+        self._has_result = False
+        self._dirty_all()
+
+    def _on_stop_edit_point(self, handle, event, args):
+        self._stop_editing_point()
+        self._status = "Editing stopped"
+        self._dirty_all()
+        try:
+            lf.ui.request_redraw()
+        except Exception:
+            pass
+
     # ── Pick handler factory ──────────────────────────────────────────────────
 
     def _make_pick_handler(self, mode: str, slot: int):
@@ -439,6 +727,11 @@ class PointAlignPanel(lf.ui.Panel):
                 except Exception:
                     pass
                 clear_pick_callback()
+
+            # An active edit-gizmo session would fight over viewport clicks
+            # with a new pick session -- stop it first.
+            if self._editing_which:
+                self._stop_editing_point()
 
             # Set up new pick — do NOT reset the other mode's overlay points
             _picking_which = slot
@@ -559,6 +852,8 @@ class PointAlignPanel(lf.ui.Panel):
         self._dirty_all()
 
     def _on_clear_ref(self, handle, event, args):
+        if self._editing_mode == "ref":
+            self._stop_editing_point()
         self._ref_pts    = [None, None, None]
         for i in range(_NUM_POINTS):
             _ref_overlay[i] = None
@@ -567,6 +862,8 @@ class PointAlignPanel(lf.ui.Panel):
         self._dirty_all()
 
     def _on_clear_tba(self, handle, event, args):
+        if self._editing_mode == "tba":
+            self._stop_editing_point()
         self._tba_pts    = [None, None, None]
         for i in range(_NUM_POINTS):
             _tba_overlay[i] = None
@@ -770,7 +1067,9 @@ class PointAlignPanel(lf.ui.Panel):
         for i in range(1, _NUM_POINTS + 1):
             fields += [
                 f"ref_pt{i}_label", f"ref_pt{i}_has_pos",
+                f"ref_pt{i}_editing", f"ref_pt{i}_edit_idle",
                 f"tba_pt{i}_label", f"tba_pt{i}_has_pos",
+                f"tba_pt{i}_editing", f"tba_pt{i}_edit_idle",
             ]
         for _, step_lbl in _STEP_OPTIONS:
             key = step_lbl.replace(".", "_")
@@ -792,3 +1091,4 @@ class PointAlignPanel(lf.ui.Panel):
 
 def remove_point_align_draw_handler():
     _remove_overlay()
+    _unregister_edit_tool()
