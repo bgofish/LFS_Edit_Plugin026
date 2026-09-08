@@ -1,0 +1,29 @@
+{
+  "transform": {
+    "tx": 0.0,
+    "ty": 0.0,
+    "tz": 0.0,
+    "rx": 0.0,
+    "ry": 0.0,
+    "rz": 0.0,
+    "sx": 1.0,
+    "sy": 1.0,
+    "sz": 1.0,
+    "uniform_scale": true,
+    "live": true,
+    "merge_name": "merged",
+    "folder_name": "Group",
+    "move_target": "Selection"
+  },
+  "limits": {
+    "translation_min": -50.0,
+    "translation_max": 50.0,
+    "rotation_min": -180.0,
+    "rotation_max": 180.0,
+    "scale_min": 0.0,
+    "scale_max": 5.0,
+    "translation_step": 0.1,
+    "rotation_step": 1.0,
+    "scale_step": 1.0
+  }
+}
