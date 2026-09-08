@@ -30,6 +30,10 @@
               title="Open session_log.json in Notepad++ (falls back to Notepad if Notepad++ is not installed).">Open Log</button>
       <button class="btn" data-event-click="do_open_settings"
               title="Open settings.json in Notepad++ (falls back to Notepad if Notepad++ is not installed).">Open Settings</button>
+      <button class="btn" data-event-click="do_read_3palign"
+              title="Read 3pAlign.json and load its transform values into the sliders.">Read 3pAlign</button>
+      <button class="btn" data-event-click="do_open_3palign"
+              title="Open 3pAlign.json in Notepad++ (falls back to Notepad).">Open 3pAlign</button>
     </div>
 
     <div class="separator"></div>

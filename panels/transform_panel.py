@@ -593,7 +593,7 @@ class TransformPanel(lf.ui.Panel):
         self._t_max  =  50.0
         self._r_min  = -180.0
         self._r_max  =  180.0
-        self._s_min  =  0.01
+        self._s_min  =  0.0
         self._s_max  =  5.0
         self._t_step =  0.1
         self._r_step =  1.0
@@ -753,6 +753,8 @@ class TransformPanel(lf.ui.Panel):
         model.bind_event("do_reload_settings",  self._on_reload_settings)
         model.bind_event("do_open_log",         self._on_open_log)
         model.bind_event("do_open_settings",    self._on_open_settings)
+        model.bind_event("do_read_3palign",     self._on_read_3palign)
+        model.bind_event("do_open_3palign",     self._on_open_3palign)
         model.bind_event("do_recenter_xyz",     self._on_recenter_xyz)
         model.bind_event("do_recenter_xz_0y",  self._on_recenter_xz_0y)
 
@@ -834,6 +836,71 @@ class TransformPanel(lf.ui.Panel):
             self._status = self._open_in_editor(settings_path)
         except Exception as e:
             self._status = f"Could not open settings: {e}"
+        self._dirty("status_text", "status_class")
+
+    def _on_read_3palign(self, handle, event, args):
+        """Load transform from 3pAlign.json into the panel sliders."""
+        path = self._3palign_path()
+        try:
+            if not path.exists():
+                self._status = f"3pAlign.json not found at {path}"
+                self._dirty("status_text", "status_class")
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            t    = data.get("transform", {})
+            if not t:
+                self._status = "3pAlign.json has no 'transform' entry."
+                self._dirty("status_text", "status_class")
+                return
+            self._tx = float(t.get("tx", 0.0))
+            self._ty = float(t.get("ty", 0.0))
+            self._tz = float(t.get("tz", 0.0))
+            self._rx = float(t.get("rx", 0.0))
+            self._ry = float(t.get("ry", 0.0))
+            self._rz = float(t.get("rz", 0.0))
+            self._sx = max(0.01, float(t.get("sx", 1.0)))
+            self._sy = max(0.01, float(t.get("sy", 1.0)))
+            self._sz = max(0.01, float(t.get("sz", 1.0)))
+            # Expand limits to fit the loaded values
+            self._expand_t_limits(self._tx, self._ty, self._tz)
+            s_max_needed = max(self._sx, self._sy, self._sz) * 1.1
+            if s_max_needed > self._s_max:
+                self._s_max = round(s_max_needed, 4)
+            s_min_needed = min(self._sx, self._sy, self._sz) * 0.9
+            if s_min_needed < self._s_min:
+                self._s_min = max(0.0, round(s_min_needed, 6))
+            # Auto-reduce scale step if the loaded scale needs finer resolution
+            # e.g. sx=0.977913 needs step <= 0.01 to be representable on slider
+            s_frac = min(self._sx, self._sy, self._sz) % 1.0
+            if s_frac > 1e-4 and s_frac < 0.1 and self._s_step > 0.01:
+                # Find the smallest step level that fits
+                for step in [0.001, 0.002, 0.005, 0.01]:
+                    if step >= s_frac * 0.5 or step >= 0.01:
+                        self._s_step = step
+                        self._s_step_idx = min(
+                            range(len(_STEP_LEVELS)),
+                            key=lambda i: abs(_STEP_LEVELS[i] - step))
+                        break
+            self._status = f"Loaded transform from 3pAlign.json."
+            lf.log.info(f"EDIT Read 3pAlign: tx={self._tx:.4f} ty={self._ty:.4f} tz={self._tz:.4f} rx={self._rx:.4f} ry={self._ry:.4f} rz={self._rz:.4f} sx={self._sx:.6f} sy={self._sy:.6f} sz={self._sz:.6f}")
+            if self._live:
+                self._apply_to_scene()
+            self._dirty_all()
+        except Exception as e:
+            self._status = f"Read 3pAlign error: {e}"
+            self._dirty("status_text", "status_class")
+
+    def _on_open_3palign(self, handle, event, args):
+        """Open 3pAlign.json in the system editor."""
+        path = self._3palign_path()
+        try:
+            if not path.exists():
+                self._status = f"3pAlign.json not found at {path}"
+                self._dirty("status_text", "status_class")
+                return
+            self._status = self._open_in_editor(path)
+        except Exception as e:
+            self._status = f"Could not open 3pAlign.json: {e}"
         self._dirty("status_text", "status_class")
 
     def _expand_t_limits(self, tx: float, ty: float, tz: float) -> list[str]:
@@ -1020,6 +1087,9 @@ class TransformPanel(lf.ui.Panel):
             else:
                 self._status = (f"Baked {baked} node(s) in group "
                                 f"'{self._node_name}' — transforms reset to identity.")
+            self._tx = self._ty = self._tz = 0.0
+            self._rx = self._ry = self._rz = 0.0
+            self._sx = self._sy = self._sz = 1.0
             self._sync_from_scene()
         else:
             err = _bake(self._node_name)
@@ -1027,6 +1097,9 @@ class TransformPanel(lf.ui.Panel):
                 self._status = f"Bake failed: {err}"
             else:
                 self._status = "Baked — transform reset to identity."
+                self._tx = self._ty = self._tz = 0.0
+                self._rx = self._ry = self._rz = 0.0
+                self._sx = self._sy = self._sz = 1.0
                 self._sync_from_scene()
         self._dirty_all()
 
@@ -1139,9 +1212,16 @@ class TransformPanel(lf.ui.Panel):
 
     def _set_trs(self, attr: str, value, lo: float, hi: float):
         try:
-            v = max(lo, min(hi, float(value)))
+            v = round(max(lo, min(hi, float(value))), 3)  # match display precision :.3f
         except (TypeError, ValueError):
             return
+        # Snap scale values that are within 0.005 of an integer to avoid
+        # floating-point drift from slider interpolation (e.g. 1.0099 -> 1.010)
+        if attr in ("sx", "sy", "sz"):
+            nearest = round(v)
+            if abs(v - nearest) < 0.005 and lo <= nearest <= hi:
+                v = float(nearest)
+            v = max(0.01, v)  # never allow zero or negative scale
         if abs(v - getattr(self, f"_{attr}")) < 1e-9:
             return
         setattr(self, f"_{attr}", v)
@@ -1299,6 +1379,10 @@ class TransformPanel(lf.ui.Panel):
     @staticmethod
     def _settings_path() -> Path:
         return Path(__file__).resolve().parent.parent / "settings.json"
+
+    @staticmethod
+    def _3palign_path() -> Path:
+        return Path(__file__).resolve().parent.parent / "3pAlign.json"
 
     @staticmethod
     def _log_path() -> Path:
