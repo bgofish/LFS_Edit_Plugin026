@@ -7,7 +7,7 @@
   <span class="text-muted">Step 1: Pick 3 points on the REFERENCE 3DGS.</span><br/>
   <span class="text-muted">Step 2: Pick 3 points on the ALIGN 3DGS.</span><br/>
   <span class="text-muted">Step 3: Press [Calculate Transform]</span><br/>
-  <span class="text-muted">Step 4: Press [Apply to the Edit panel]</span><br/>  
+  <span class="text-muted">Step 4: Press [Write to 3pAlign]</span><br/>  
   <span class="text-muted">Step 5: Switch to [Edit] and with Align 3dGS selected - Press [Read Settings].</span><br/> 
   <span class="text-muted">Step 6: If you are happy with the transform then Press [Bake Transform] to make changes permanent.</span><br/> 
   <span class="text-muted">Note:All transform settings will revert to 0 after Bake Transform</span><br/>

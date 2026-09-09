@@ -180,21 +180,21 @@
     </div>
     <div class="setting-row" data-attr-title="tip_sx">
       <span class="prop-label">X</span>
-      <input type="range" class="setting-slider" data-value="sx_str" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sx" />
+      <input type="range" class="setting-slider" data-value="sx_slider" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sx" />
       <input type="text"  class="number-input"   data-value="sx_str" />
       <button class="num-step-btn" data-event-mousedown="num_step('sx', -1)">-</button>
       <button class="num-step-btn" data-event-mousedown="num_step('sx',  1)">+</button>
     </div>
     <div class="setting-row" data-attr-title="tip_sy">
       <span class="prop-label">Y</span>
-      <input type="range" class="setting-slider" data-value="sy_str" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sy" />
+      <input type="range" class="setting-slider" data-value="sy_slider" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sy" />
       <input type="text"  class="number-input"   data-value="sy_str" />
       <button class="num-step-btn" data-event-mousedown="num_step('sy', -1)">-</button>
       <button class="num-step-btn" data-event-mousedown="num_step('sy',  1)">+</button>
     </div>
     <div class="setting-row" data-attr-title="tip_sz">
       <span class="prop-label">Z</span>
-      <input type="range" class="setting-slider" data-value="sz_str" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sz" />
+      <input type="range" class="setting-slider" data-value="sz_slider" data-attr-min="s_min" data-attr-max="s_max" data-attr-step="s_step" data-attr-title="tip_sz" />
       <input type="text"  class="number-input"   data-value="sz_str" />
       <button class="num-step-btn" data-event-mousedown="num_step('sz', -1)">-</button>
       <button class="num-step-btn" data-event-mousedown="num_step('sz',  1)">+</button>

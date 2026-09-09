@@ -576,6 +576,7 @@ class TransformPanel(lf.ui.Panel):
         self._align_rx         = 0.0
         self._align_ry         = 0.0
         self._align_rz         = 0.0
+        self._3palign_pending  = False   # deferred re-apply after RmlUI step changes
         self._folder_name    = "Group"
         self._move_target    = "Selection"
         self._tx = self._ty = self._tz = 0.0
@@ -687,6 +688,17 @@ class TransformPanel(lf.ui.Panel):
         model.bind("sz_str",
                    lambda: f"{self._sz:.3f}",
                    lambda v: self._set_trs("sz", v, self._s_min, self._s_max))
+        # Separate slider bindings — read the same value but write via _set_trs
+        # so the slider position tracks correctly without snapping the text field
+        model.bind("sx_slider",
+                   lambda: f"{self._sx:.3f}",
+                   lambda v: self._set_trs("sx", v, self._s_min, self._s_max))
+        model.bind("sy_slider",
+                   lambda: f"{self._sy:.3f}",
+                   lambda v: self._set_trs("sy", v, self._s_min, self._s_max))
+        model.bind("sz_slider",
+                   lambda: f"{self._sz:.3f}",
+                   lambda v: self._set_trs("sz", v, self._s_min, self._s_max))
 
         # Text inputs
         model.bind("merge_name",
@@ -780,6 +792,13 @@ class TransformPanel(lf.ui.Panel):
                 lf.ui.request_redraw()
             except Exception:
                 pass
+        # Deferred second load for Read 3pAlign — re-applies values after RmlUI
+        # has processed the step/limit changes from the first load
+        if self._3palign_pending:
+            self._3palign_pending = False
+            self._load_3palign()
+            self._dirty_all()
+            return True
         current = lf.get_selected_node_name() if lf.has_scene() else ""
         if current != self._last_node_name:
             self._last_node_name = current
@@ -839,56 +858,80 @@ class TransformPanel(lf.ui.Panel):
         self._dirty("status_text", "status_class")
 
     def _on_read_3palign(self, handle, event, args):
-        """Load transform from 3pAlign.json into the panel sliders."""
+        """Load transform from 3pAlign.json.
+        First call sets limits/steps and values, then sets a pending flag
+        so on_update() re-applies the values on the next frame after RmlUI
+        has processed the step/limit changes.
+        """
+        self._load_3palign()
+        self._3palign_pending = True
+        self._dirty_all()
+
+    def _load_3palign(self):
+        """Internal: parse 3pAlign.json and apply all transform values."""
         path = self._3palign_path()
         try:
             if not path.exists():
                 self._status = f"3pAlign.json not found at {path}"
-                self._dirty("status_text", "status_class")
                 return
             data = json.loads(path.read_text(encoding="utf-8"))
             t    = data.get("transform", {})
             if not t:
                 self._status = "3pAlign.json has no 'transform' entry."
-                self._dirty("status_text", "status_class")
                 return
-            self._tx = float(t.get("tx", 0.0))
-            self._ty = float(t.get("ty", 0.0))
-            self._tz = float(t.get("tz", 0.0))
-            self._rx = float(t.get("rx", 0.0))
-            self._ry = float(t.get("ry", 0.0))
-            self._rz = float(t.get("rz", 0.0))
-            self._sx = max(0.01, float(t.get("sx", 1.0)))
-            self._sy = max(0.01, float(t.get("sy", 1.0)))
-            self._sz = max(0.01, float(t.get("sz", 1.0)))
-            # Expand limits to fit the loaded values
-            self._expand_t_limits(self._tx, self._ty, self._tz)
-            s_max_needed = max(self._sx, self._sy, self._sz) * 1.1
+
+            tx = float(t.get("tx", 0.0))
+            ty = float(t.get("ty", 0.0))
+            tz = float(t.get("tz", 0.0))
+            rx = float(t.get("rx", 0.0))
+            ry = float(t.get("ry", 0.0))
+            rz = float(t.get("rz", 0.0))
+            sx = max(0.01, float(t.get("sx", 1.0)))
+            sy = sx if self._uniform_scale else max(0.01, float(t.get("sy", 1.0)))
+            sz = sx if self._uniform_scale else max(0.01, float(t.get("sz", 1.0)))
+
+            # Adjust limits and steps first so sliders can represent the values
+            self._expand_t_limits(tx, ty, tz)
+
+            r_fracs = [abs(v % 1.0) for v in [rx, ry, rz] if abs(v % 1.0) > 1e-4]
+            if r_fracs and self._r_step > 0.001:
+                r_frac = min(r_fracs)
+                for step in [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]:
+                    if step >= r_frac * 0.5:
+                        self._r_step     = step
+                        self._r_step_idx = min(range(len(_STEP_LEVELS)),
+                                               key=lambda i: abs(_STEP_LEVELS[i] - step))
+                        break
+
+            s_max_needed = max(sx, sy, sz) * 1.1
             if s_max_needed > self._s_max:
                 self._s_max = round(s_max_needed, 4)
-            s_min_needed = min(self._sx, self._sy, self._sz) * 0.9
-            if s_min_needed < self._s_min:
-                self._s_min = max(0.0, round(s_min_needed, 6))
-            # Auto-reduce scale step if the loaded scale needs finer resolution
-            # e.g. sx=0.977913 needs step <= 0.01 to be representable on slider
-            s_frac = min(self._sx, self._sy, self._sz) % 1.0
-            if s_frac > 1e-4 and s_frac < 0.1 and self._s_step > 0.01:
-                # Find the smallest step level that fits
-                for step in [0.001, 0.002, 0.005, 0.01]:
-                    if step >= s_frac * 0.5 or step >= 0.01:
-                        self._s_step = step
-                        self._s_step_idx = min(
-                            range(len(_STEP_LEVELS)),
-                            key=lambda i: abs(_STEP_LEVELS[i] - step))
+            s_frac = sx % 1.0
+            if 1e-4 < s_frac < 1.0 and self._s_step > 0.001:
+                for step in [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]:
+                    if step >= s_frac * 0.5:
+                        self._s_step     = step
+                        self._s_step_idx = min(range(len(_STEP_LEVELS)),
+                                               key=lambda i: abs(_STEP_LEVELS[i] - step))
                         break
-            self._status = f"Loaded transform from 3pAlign.json."
-            lf.log.info(f"EDIT Read 3pAlign: tx={self._tx:.4f} ty={self._ty:.4f} tz={self._tz:.4f} rx={self._rx:.4f} ry={self._ry:.4f} rz={self._rz:.4f} sx={self._sx:.6f} sy={self._sy:.6f} sz={self._sz:.6f}")
+
+            # Assign values after limits/steps are correct
+            self._tx = tx
+            self._ty = ty
+            self._tz = tz
+            self._rx = rx
+            self._ry = ry
+            self._rz = rz
+            self._sx = sx
+            self._sy = sy
+            self._sz = sz
+
+            self._status = "Loaded transform from 3pAlign.json."
             if self._live:
                 self._apply_to_scene()
-            self._dirty_all()
+
         except Exception as e:
             self._status = f"Read 3pAlign error: {e}"
-            self._dirty("status_text", "status_class")
 
     def _on_open_3palign(self, handle, event, args):
         """Open 3pAlign.json in the system editor."""
@@ -1063,6 +1106,7 @@ class TransformPanel(lf.ui.Panel):
         self._dirty("tx_str", "ty_str", "tz_str",
                     "rx_str", "ry_str", "rz_str",
                     "sx_str", "sy_str", "sz_str",
+                    "sx_slider", "sy_slider", "sz_slider",
                     "status_text", "status_class")
 
     def _on_bake(self, handle, event, args):
@@ -1531,6 +1575,7 @@ class TransformPanel(lf.ui.Panel):
                     "tx_str", "ty_str", "tz_str",
                     "rx_str", "ry_str", "rz_str",
                     "sx_str", "sy_str", "sz_str",
+                    "sx_slider", "sy_slider", "sz_slider",
                     "live", "uniform_scale",
                     "t_min", "t_max", "t_step", "t_step_label",
                     "r_min", "r_max", "r_step", "r_step_label",

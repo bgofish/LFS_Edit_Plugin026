@@ -893,7 +893,7 @@ class PointAlignPanel(lf.ui.Panel):
                 f"Solved — T({self._result_tx:+.3f}, {self._result_ty:+.3f}, "
                 f"{self._result_tz:+.3f})  R({self._result_rx:+.2f}°, "
                 f"{self._result_ry:+.2f}°, {self._result_rz:+.2f}°)  "
-                f"Scale={s:.5f} — press [Apply to Edit Panel]."
+                f"Scale={s:.5f} — press [Write to 3pAlign]."
             )
         except Exception as e:
             self._status = f"Solve error: {e}"
